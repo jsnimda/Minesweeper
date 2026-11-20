@@ -1,6 +1,7 @@
 from assets.catalogs import (
     artwork,
     macos,
+    minesweeper_windows7,
     photographs,
     windows,
     windows_xp,
@@ -20,6 +21,8 @@ def download() -> None:
     windows_7.download()
     windows_10.download()
     windows_11.download()
+
+    minesweeper_windows7.download()
 
 
 if __name__ == "__main__":
