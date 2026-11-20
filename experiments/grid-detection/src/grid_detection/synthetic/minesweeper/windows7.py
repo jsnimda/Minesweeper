@@ -70,6 +70,10 @@ CONTROL_POSITION = 0.15
 CONTROL_GAP = 12
 CONTROL_BOTTOM_MARGIN = 8
 
+CONTROL_FONT_PATH = ASSET_DIR / "fonts" / "segoeuil.ttf"
+CONTROL_FONT_SIZE = 30
+CONTROL_TEXT_COLOR = (240, 240, 240, 255)
+
 
 @lru_cache(maxsize=1)
 def _assets() -> tuple[Image.Image, Image.Image, Image.Image]:
@@ -81,6 +85,11 @@ def _assets() -> tuple[Image.Image, Image.Image, Image.Image]:
         raise ValueError("Unexpected Windows 7 atlas dimensions; expected x2 sheets")
 
     return blue, mine, other
+
+
+@lru_cache(maxsize=1)
+def _control_font() -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(CONTROL_FONT_PATH, CONTROL_FONT_SIZE)
 
 
 def _paste_centered(canvas: Image.Image, sprite: Image.Image, x: int, y: int) -> None:
@@ -304,12 +313,11 @@ def _control(
     canvas.alpha_composite(icon, (icon_x, icon_y))
 
     draw = ImageDraw.Draw(canvas)
-    font = ImageFont.load_default()
     draw.text(
-        (box_x + box.width // 2, box_y + box.height // 2),
+        (box_x + box.width // 2, box_y + box.height // 2 - 1),
         str(int(value)),
-        fill=(245, 248, 255, 255),
-        font=font,
+        fill=CONTROL_TEXT_COLOR,
+        font=_control_font(),
         anchor="mm",
     )
 
