@@ -277,21 +277,49 @@ def render_scene(
         )
 
     # 3. Fit and position windows.
+    # Minesweeper windows cannot overlap each other.
+    # Background applications may overlap any window.
+    protected_indices = [
+        i
+        for i, spec in enumerate(scene["windows"])
+        if spec["type"] == "minesweeper"
+    ]
+
     windows = place_windows(
         windows,
         size=size,
         desktop=desktop,
         seed=scene_seed,
         scalable=scalable,
+        protected_indices=protected_indices,
+        allow_background_overlap=True,
     )
 
     # 4. Compose the screenshot using Skia.
-    image, annotations = compose_screenshot(
+    # Draw background applications first and Minesweeper last.
+    # Preserve relative order within each group.
+    protected = set(protected_indices)
+
+    draw_order = [
+        i for i in range(len(windows))
+        if i not in protected
+    ] + [
+        i for i in range(len(windows))
+        if i in protected
+    ]
+
+    image, drawn_annotations = compose_screenshot(
         wallpaper=wallpaper,
         size=size,
         desktop=desktop,
-        windows=windows,
+        windows=[windows[i] for i in draw_order],
     )
+
+    # Restore annotation order to match the original scene.
+    annotations = [None] * len(windows)
+
+    for index, boxes in zip(draw_order, drawn_annotations):
+        annotations[index] = boxes
 
     # 5. Record the actual rendered geometry.
     for spec, window, original_size in zip(

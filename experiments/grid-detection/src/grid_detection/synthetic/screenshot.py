@@ -94,11 +94,6 @@ def compose_screenshot(
                 f"Window outside available area: {extent}"
             )
 
-        if any(_intersects(extent, other) for other in extents):
-            raise ValueError(
-                f"Overlapping windows: {extent}"
-            )
-
         extents.append(extent)
 
     # One surface shared by the desktop and all windows.

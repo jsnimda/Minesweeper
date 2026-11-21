@@ -134,13 +134,21 @@ def place_windows(
     seed: int = 42,
     *,
     scalable: Sequence[bool] | None = None,
+    protected_indices: Sequence[int] = (),
+    allow_background_overlap: bool = False,
     gap: int = 12,
     attempts: int = 200,
 ) -> list[WindowLayer]:
-    """Fit and place windows without overlap.
+    """Fit and position windows inside the desktop work area.
 
-    scalable[i] enables content shrinking for window i.
-    Use True for Windows 7 Minesweeper content.
+    Protected windows are positioned first and cannot overlap
+    one another.
+
+    When allow_background_overlap=True, background windows may
+    overlap any other window. The compositor must draw protected
+    windows last to keep them fully visible.
+
+    Returned windows remain in their original input order.
     """
     if gap < 0 or attempts < 0:
         raise ValueError("gap and attempts must be nonnegative")
@@ -150,6 +158,14 @@ def place_windows(
 
     if len(scalable) != len(windows):
         raise ValueError("scalable must match windows length")
+
+    protected = set(protected_indices)
+
+    if any(
+        not isinstance(i, int) or i < 0 or i >= len(windows)
+        for i in protected
+    ):
+        raise ValueError("Invalid protected window index")
 
     left, top, right, bottom = _work_area(size, desktop)
     area_size = (right - left, bottom - top)
@@ -165,23 +181,31 @@ def place_windows(
         for window, can_scale in zip(windows, scalable)
     ]
 
-    # Larger windows are placed first.
+    # Position protected windows first.
+    # Within each group, position larger windows first.
+    def placement_priority(item):
+        index, window = item
+
+        w, h = window_size(
+            window.content_image,
+            window.menu_items,
+            style=style,
+        )
+
+        return (index in protected, w * h)
+
     ordered = sorted(
         enumerate(prepared),
-        key=lambda item: (
-            lambda dimensions: dimensions[0] * dimensions[1]
-        )(
-            window_size(
-                item[1].content_image,
-                item[1].menu_items,
-                style=style,
-            )
-        ),
+        key=placement_priority,
         reverse=True,
     )
 
     rng = random.Random(seed)
+
+    # Only needed for collision checking.
     occupied: list[Box] = []
+
+    # Preserve the association between each window and its index.
     result: dict[int, WindowLayer] = {}
 
     for index, window in ordered:
@@ -195,6 +219,11 @@ def place_windows(
         max_y = bottom - h
 
         def fits(x: int, y: int) -> bool:
+            # Background windows may overlap anything, but they
+            # will be drawn behind protected windows later.
+            if allow_background_overlap and index not in protected:
+                return True
+
             candidate = (x, y, x + w, y + h)
 
             return not any(
@@ -212,7 +241,7 @@ def place_windows(
 
         position = None
 
-        # Try random placements.
+        # Try deterministic random placements.
         for _ in range(attempts):
             x = rng.randint(left, max_x)
             y = rng.randint(top, max_y)
@@ -221,7 +250,7 @@ def place_windows(
                 position = (x, y)
                 break
 
-        # Scan the remaining area if random attempts fail.
+        # Fall back to scanning the remaining work area.
         if position is None:
             xs = list(range(left, max_x + 1, 8))
             ys = list(range(top, max_y + 1, 8))
@@ -243,16 +272,17 @@ def place_windows(
 
         if position is None:
             raise ValueError(
-                f"Could not position window {index} "
-                f"({w}x{h}) without overlap"
+                f"Could not position window {index} ({w}x{h})"
             )
 
         x, y = position
+
         occupied.append((x, y, x + w, y + h))
+
         result[index] = replace(
             window,
             position=position,
         )
 
-    # Return the original window order.
+    # Keep original input order for metadata and annotations.
     return [result[i] for i in range(len(windows))]
