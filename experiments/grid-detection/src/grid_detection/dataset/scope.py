@@ -17,9 +17,13 @@ SCOPE = {
         "classic": 10,
     },
     "shell_styles": {
-        "taskbar": ["modern", "aero", "classic"],
-        "dock": ["modern", "aero", "classic"],
-        "top_panel": ["modern", "aero"],
+        "taskbar": ("modern", "aero", "classic"),
+        "dock": ("modern",),
+        "top_panel": ("modern",),
+    },
+    "taskbar_layout": {
+        "centered": 60,
+        "left": 40,
     },
     "color_scheme": {
         "modern": {"light": 55, "dark": 45},

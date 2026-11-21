@@ -4,6 +4,7 @@
 import colorsys
 import random
 from collections.abc import Mapping
+from datetime import date, timedelta
 from typing import TypeVar
 
 from .scope import SCOPE
@@ -60,6 +61,11 @@ def sample_desktop(rng: random.Random) -> dict:
             if name in allowed
         },
     )
+    taskbar_layout = (
+        choose(rng, SCOPE["taskbar_layout"])
+        if shell == "taskbar" and style == "modern"
+        else None
+    )
 
     color_scheme = choose(
         rng, SCOPE["color_scheme"][style]
@@ -83,12 +89,26 @@ def sample_desktop(rng: random.Random) -> dict:
             weights = SCOPE["wallpaper_family_fallback"][style]
         wallpaper["family"] = choose(rng, weights)
 
+    # A reproducible, synthetic desktop timestamp.
+    clock_day = date(2020, 1, 1) + timedelta(
+        days=rng.randrange(365 * 7)
+    )
+
+    clock_hour = rng.randrange(24)
+    clock_minute = rng.randrange(60)
+
+    clock_time = f"{clock_hour:02d}:{clock_minute:02d}"
+    clock_date = clock_day.strftime("%m/%d/%Y")
+
     return {
         "shell": shell,
         "style": style,
+        "taskbar_layout": taskbar_layout,
         "color_scheme": color_scheme,
         "accent_color": accent_color,
         "wallpaper": wallpaper,
+        "clock_time": clock_time,
+        "clock_date": clock_date,
     }
 
 
