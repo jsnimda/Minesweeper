@@ -13,6 +13,14 @@ from .applications.sudoku import render_sudoku
 from .applications.spreadsheet import render_spreadsheet
 from .applications.file_manager import render_file_manager
 from .applications.browser import render_browser
+from .applications.document_editor import render_document_editor
+from .applications.presentation import render_presentation
+from .applications.code_editor import render_code_editor
+from .applications.terminal import render_terminal
+from .applications.calculator import render_calculator
+from .applications.settings import render_settings
+from .applications.other_puzzle import render_other_puzzle
+from .applications.media_viewer import render_media_viewer
 
 from .wallpaper import resolve_wallpaper
 from .screenshot import WindowLayer, compose_screenshot
@@ -41,6 +49,38 @@ APPLICATIONS = {
     "browser": {
         "render": render_browser,
         "title": "Browser",
+    },
+    "document_editor": {
+        "render": render_document_editor,
+        "title": "Document Editor",
+    },
+    "presentation": {
+        "render": render_presentation,
+        "title": "Presentation",
+    },
+    "code_editor": {
+        "render": render_code_editor,
+        "title": "Code Editor",
+    },
+    "terminal": {
+        "render": render_terminal,
+        "title": "Terminal",
+    },
+    "calculator": {
+        "render": render_calculator,
+        "title": "Calculator",
+    },
+    "settings": {
+        "render": render_settings,
+        "title": "Settings",
+    },
+    "other_puzzle": {
+        "render": render_other_puzzle,
+        "title": "Puzzle",
+    },
+    "media_viewer": {
+        "render": render_media_viewer,
+        "title": "Photos",
     },
 }
 
