@@ -308,7 +308,16 @@ def place_windows(
                     for ox0, oy0, ox1, oy1 in occupied
                 )
 
-            # Useful when large windows must sit near edges.
+            # Try random positions first for better spatial diversity.
+            candidates = [
+                (
+                    rng.randint(left, max_x),
+                    rng.randint(top, max_y),
+                )
+                for _ in range(attempts)
+            ]
+
+            # Use corners as a fallback for difficult layouts.
             corners = [
                 (left, top),
                 (max_x, top),
@@ -317,27 +326,7 @@ def place_windows(
             ]
 
             rng.shuffle(corners)
-
-            # Start at a random location or an edge.
-            first_choices = corners + [
-                (
-                    rng.randint(left, max_x),
-                    rng.randint(top, max_y),
-                )
-            ]
-
-            candidates = [rng.choice(first_choices)]
-
-            # Try every corner, then random locations.
             candidates.extend(corners)
-
-            candidates.extend(
-                (
-                    rng.randint(left, max_x),
-                    rng.randint(top, max_y),
-                )
-                for _ in range(attempts)
-            )
 
             position = next(
                 (
