@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=2.5.5",
     "pillow>=13.0.0",
     "skia-python>=144.1",
+    "tqdm>=4.70.1",
 ]
 
 [project.scripts]

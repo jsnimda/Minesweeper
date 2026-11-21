@@ -5,6 +5,8 @@ import json
 import re
 from pathlib import Path
 
+from tqdm.std import tqdm
+
 from .sampler import sample_scene
 from ..synthetic.renderer import render_scene
 
@@ -61,57 +63,65 @@ def generate_dataset(
     accepted = []
     rejected = []
 
-    for attempt in range(max_attempts):
-        if len(accepted) == count:
-            break
+    with tqdm(
+        total=count,
+        desc="Generating screenshots",
+        unit="img",
+    ) as progress:
+        for attempt in range(max_attempts):
+            if len(accepted) == count:
+                break
 
-        seed = start_seed + attempt
-        scene = sample_scene(seed)
+            seed = start_seed + attempt
+            scene = sample_scene(seed)
 
-        try:
-            image, annotations, resolved_scene = render_scene(scene)
-        except ValueError as exc:
-            if not _PLACEMENT_ERROR.fullmatch(str(exc)):
-                raise
+            try:
+                image, annotations, resolved_scene = render_scene(scene)
+            except ValueError as exc:
+                if not _PLACEMENT_ERROR.fullmatch(str(exc)):
+                    raise
 
-            rejected.append({
+                rejected.append({
+                    "seed": seed,
+                    "reason": str(exc),
+                })
+                progress.set_postfix(rejected=len(rejected))
+                continue
+
+            index = len(accepted)
+            filename = f"{index:06d}"
+
+            image_path = images_dir / f"{filename}.png"
+            annotation_path = annotations_dir / f"{filename}.json"
+
+            annotation_record = {
                 "seed": seed,
-                "reason": str(exc),
+                "image": f"images/{filename}.png",
+                "width": image.width,
+                "height": image.height,
+                "annotations": annotations,
+                "scene": resolved_scene,
+            }
+
+            image.save(image_path, format="PNG")
+
+            with annotation_path.open("w", encoding="utf-8") as file:
+                json.dump(
+                    annotation_record,
+                    file,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+
+            accepted.append({
+                "index": index,
+                "seed": seed,
+                "image": f"images/{filename}.png",
+                "annotation": f"annotations/{filename}.json",
             })
-            continue
 
-        index = len(accepted)
-        filename = f"{index:06d}"
-
-        image_path = images_dir / f"{filename}.png"
-        annotation_path = annotations_dir / f"{filename}.json"
-
-        # Preserve every annotation and the complete resolved scene.
-        annotation_record = {
-            "seed": seed,
-            "image": f"images/{filename}.png",
-            "width": image.width,
-            "height": image.height,
-            "annotations": annotations,
-            "scene": resolved_scene,
-        }
-
-        image.save(image_path, format="PNG")
-
-        with annotation_path.open("w", encoding="utf-8") as file:
-            json.dump(
-                annotation_record,
-                file,
-                indent=2,
-                ensure_ascii=False,
-            )
-
-        accepted.append({
-            "index": index,
-            "seed": seed,
-            "image": f"images/{filename}.png",
-            "annotation": f"annotations/{filename}.json",
-        })
+            progress.update(1)
+            progress.set_postfix(rejected=len(rejected))
 
     manifest = {
         "requested_count": count,
