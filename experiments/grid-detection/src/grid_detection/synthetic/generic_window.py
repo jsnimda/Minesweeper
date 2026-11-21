@@ -78,10 +78,7 @@ def window_size(
         else 0
     )
 
-    width = max(
-        content_image.width + CONTENT_PADDING * 2,
-        190,
-    ) + frame * 2
+    width = content_image.width + CONTENT_PADDING * 2 + frame * 2
 
     height = (
         title_height(style)
