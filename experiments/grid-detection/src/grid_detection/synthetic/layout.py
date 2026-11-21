@@ -6,6 +6,7 @@ Minesweeper content is scaled only when necessary.
 """
 
 import random
+from math import ceil
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -29,7 +30,7 @@ def fit_content(
     boxes: dict[str, Box],
     max_size: tuple[int, int],
     *,
-    min_scale: float = 0.65,
+    min_scale: float = 0.5,
 ) -> tuple[Image.Image, dict[str, Box]]:
     """Shrink content uniformly while preserving annotation boxes."""
     max_w, max_h = max_size
@@ -138,20 +139,17 @@ def place_windows(
     allow_background_overlap: bool = False,
     gap: int = 12,
     attempts: int = 200,
+    layout_attempts: int = 60,
 ) -> list[WindowLayer]:
-    """Fit and position windows inside the desktop work area.
+    """Sample target scales and retry complete window layouts.
 
-    Protected windows are positioned first and cannot overlap
-    one another.
-
-    When allow_background_overlap=True, background windows may
-    overlap any other window. The compositor must draw protected
-    windows last to keep them fully visible.
-
-    Returned windows remain in their original input order.
+    Protected windows cannot overlap.
+    Scalable protected windows sample scales in [0.5, 1.0].
+    Fixed protected windows retain their native content size.
+    Background windows may overlap when enabled.
     """
-    if gap < 0 or attempts < 0:
-        raise ValueError("gap and attempts must be nonnegative")
+    if gap < 0 or attempts < 0 or layout_attempts < 1:
+        raise ValueError("Invalid placement attempt settings")
 
     if scalable is None:
         scalable = [False] * len(windows)
@@ -168,121 +166,225 @@ def place_windows(
         raise ValueError("Invalid protected window index")
 
     left, top, right, bottom = _work_area(size, desktop)
-    area_size = (right - left, bottom - top)
+    area_w = right - left
+    area_h = bottom - top
     style = desktop["style"]
 
-    prepared = [
-        prepare_window(
-            window,
-            area_size,
-            allow_scaling=can_scale,
-            style=style,
-        )
-        for window, can_scale in zip(windows, scalable)
-    ]
-
-    # Position protected windows first.
-    # Within each group, position larger windows first.
-    def placement_priority(item):
-        index, window = item
-
-        w, h = window_size(
-            window.content_image,
-            window.menu_items,
-            style=style,
-        )
-
-        return (index in protected, w * h)
-
-    ordered = sorted(
-        enumerate(prepared),
-        key=placement_priority,
-        reverse=True,
+    frame = (
+        AERO_FRAME if style == "aero"
+        else CLASSIC_FRAME if style == "classic"
+        else 0
     )
 
     rng = random.Random(seed)
 
-    # Only needed for collision checking.
-    occupied: list[Box] = []
+    # Background applications only need to be prepared once.
+    backgrounds = {}
 
-    # Preserve the association between each window and its index.
-    result: dict[int, WindowLayer] = {}
+    for i, window in enumerate(windows):
+        if i not in protected:
+            backgrounds[i] = prepare_window(
+                window,
+                (area_w, area_h),
+                allow_scaling=True,
+                style=style,
+            )
 
-    for index, window in ordered:
-        w, h = window_size(
+    def dimensions(window):
+        return window_size(
             window.content_image,
             window.menu_items,
             style=style,
         )
 
-        max_x = right - w
-        max_y = bottom - h
+    def sample_targets():
+        """Create fresh game windows for one layout attempt."""
+        prepared = {}
 
-        def fits(x: int, y: int) -> bool:
-            # Background windows may overlap anything, but they
-            # will be drawn behind protected windows later.
-            if allow_background_overlap and index not in protected:
-                return True
+        for i in sorted(protected):
+            window = windows[i]
 
-            candidate = (x, y, x + w, y + h)
-
-            return not any(
-                _intersects(
-                    candidate,
-                    (
-                        ox0 - gap,
-                        oy0 - gap,
-                        ox1 + gap,
-                        oy1 + gap,
-                    ),
+            if not scalable[i]:
+                # Classic: never shrink.
+                prepared[i] = prepare_window(
+                    window,
+                    (area_w, area_h),
+                    allow_scaling=False,
+                    style=style,
                 )
-                for ox0, oy0, ox1, oy1 in occupied
+                continue
+
+            # Windows 7: independent random scale.
+            scale = rng.uniform(0.5, 1.0)
+
+            menu_h = (
+                MENU_HEIGHT if window.menu_items else 0
             )
 
-        position = None
-
-        # Try deterministic random placements.
-        for _ in range(attempts):
-            x = rng.randint(left, max_x)
-            y = rng.randint(top, max_y)
-
-            if fits(x, y):
-                position = (x, y)
-                break
-
-        # Fall back to scanning the remaining work area.
-        if position is None:
-            xs = list(range(left, max_x + 1, 8))
-            ys = list(range(top, max_y + 1, 8))
-
-            if not xs or xs[-1] != max_x:
-                xs.append(max_x)
-
-            if not ys or ys[-1] != max_y:
-                ys.append(max_y)
-
-            for y in ys:
-                for x in xs:
-                    if fits(x, y):
-                        position = (x, y)
-                        break
-
-                if position is not None:
-                    break
-
-        if position is None:
-            raise ValueError(
-                f"Could not position window {index} ({w}x{h})"
+            max_content_w = (
+                area_w - 2 * CONTENT_PADDING - 2 * frame
+            )
+            max_content_h = (
+                area_h
+                - title_height(style)
+                - menu_h
+                - 2 * CONTENT_PADDING
+                - frame
             )
 
-        x, y = position
+            target_w = min(
+                max_content_w,
+                ceil(window.content_image.width * scale),
+            )
+            target_h = min(
+                max_content_h,
+                ceil(window.content_image.height * scale),
+            )
 
-        occupied.append((x, y, x + w, y + h))
+            # Always resize from original content, never from
+            # an image resized during a previous attempt.
+            image, boxes = fit_content(
+                window.content_image,
+                dict(window.content_boxes),
+                (target_w, target_h),
+                min_scale=0.5,
+            )
 
-        result[index] = replace(
-            window,
-            position=position,
+            prepared[i] = replace(
+                window,
+                content_image=image,
+                content_boxes=boxes,
+            )
+
+        return prepared
+
+    def try_placement(prepared):
+        """Attempt one complete arrangement."""
+        prepared = {**backgrounds, **prepared}
+
+        # Reserve space for Minesweeper first.
+        ordered = sorted(
+            prepared,
+            key=lambda i: (
+                i in protected,
+                dimensions(prepared[i])[0]
+                * dimensions(prepared[i])[1],
+            ),
+            reverse=True,
         )
 
-    # Keep original input order for metadata and annotations.
-    return [result[i] for i in range(len(windows))]
+        result = {}
+        occupied = []
+
+        for i in ordered:
+            window = prepared[i]
+            w, h = dimensions(window)
+
+            max_x = right - w
+            max_y = bottom - h
+
+            if max_x < left or max_y < top:
+                return None
+
+            def fits(x, y):
+                if (
+                    allow_background_overlap
+                    and i not in protected
+                ):
+                    return True
+
+                candidate = (x, y, x + w, y + h)
+
+                return not any(
+                    _intersects(
+                        candidate,
+                        (
+                            ox0 - gap,
+                            oy0 - gap,
+                            ox1 + gap,
+                            oy1 + gap,
+                        ),
+                    )
+                    for ox0, oy0, ox1, oy1 in occupied
+                )
+
+            # Useful when large windows must sit near edges.
+            corners = [
+                (left, top),
+                (max_x, top),
+                (left, max_y),
+                (max_x, max_y),
+            ]
+
+            rng.shuffle(corners)
+
+            # Start at a random location or an edge.
+            first_choices = corners + [
+                (
+                    rng.randint(left, max_x),
+                    rng.randint(top, max_y),
+                )
+            ]
+
+            candidates = [rng.choice(first_choices)]
+
+            # Try every corner, then random locations.
+            candidates.extend(corners)
+
+            candidates.extend(
+                (
+                    rng.randint(left, max_x),
+                    rng.randint(top, max_y),
+                )
+                for _ in range(attempts)
+            )
+
+            position = next(
+                (
+                    (x, y)
+                    for x, y in candidates
+                    if fits(x, y)
+                ),
+                None,
+            )
+
+            if position is None:
+                return None
+
+            x, y = position
+
+            result[i] = replace(
+                window,
+                position=position,
+            )
+
+            # Only protected windows need to reserve space
+            # when background overlap is enabled.
+            if i in protected or not allow_background_overlap:
+                occupied.append(
+                    (x, y, x + w, y + h)
+                )
+
+        return [
+            result[i]
+            for i in range(len(windows))
+        ]
+
+    # Retry the complete layout, including new target scales.
+    for _ in range(layout_attempts):
+        try:
+            targets = sample_targets()
+        except ValueError:
+            # A sampled scale could be too small or too large
+            # for the available work area.
+            continue
+
+        placed = try_placement(targets)
+
+        if placed is not None:
+            return placed
+
+    raise ValueError(
+        f"Could not place {len(protected)} protected windows "
+        f"after {layout_attempts} layout attempts"
+    )

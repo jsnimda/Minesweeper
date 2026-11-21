@@ -111,9 +111,9 @@ SCOPE = {
     },
     "display_scale": {
         1.0: 50,
-        1.25: 25,
-        1.5: 15,
-        2.0: 10,
+        # 1.25: 25,
+        # 1.5: 15,
+        # 2.0: 10,
     },
 
     # Scene complexity
@@ -173,13 +173,13 @@ SCOPE = {
     "game_renderer": {
         "classic": 35,
         "windows7": 25,
-        "modern_microsoft": 15,
-        "google": 15,
-        "other_web": 10,
+        # "modern_microsoft": 15,
+        # "google": 15,
+        # "other_web": 10,
     },
     "game_host": {
         "native": 55,
-        "browser": 45,
+        # "browser": 45,
     },
     "board_size": {
         "beginner": {
@@ -224,11 +224,11 @@ SCOPE = {
     # Game arrangement and occlusion
     "game_arrangement": {
         "foreground": 30,
-        "browser_embedded": 25,
+        # "browser_embedded": 25,
         "beside_other_apps": 20,
-        "partly_covered": 15,
-        "partly_offscreen": 5,
-        "other": 5,
+        # "partly_covered": 15,
+        # "partly_offscreen": 5,
+        # "other": 5,
     },
     "grid_visibility": {
         "full": 75,
