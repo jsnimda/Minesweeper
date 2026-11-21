@@ -12,11 +12,13 @@ from dataclasses import replace
 from PIL import Image
 
 from .generic_window import (
+    AERO_FRAME,
+    CLASSIC_FRAME,
     CONTENT_PADDING,
     MENU_HEIGHT,
     MIN_WIDTH,
-    TITLE_HEIGHT,
     Box,
+    title_height,
     window_size,
 )
 from .screenshot import WindowLayer, _intersects, _work_area
@@ -80,15 +82,22 @@ def prepare_window(
     work_size: tuple[int, int],
     *,
     allow_scaling: bool = False,
+    style: str = "modern",
 ) -> WindowLayer:
     """Prepare one window for the available desktop area."""
     area_w, area_h = work_size
 
     menu_h = MENU_HEIGHT if window.menu_items else 0
 
+    frame = (
+        AERO_FRAME if style == "aero"
+        else CLASSIC_FRAME if style == "classic"
+        else 0
+    )
+
     max_content_size = (
-        area_w - 2 * CONTENT_PADDING,
-        area_h - TITLE_HEIGHT - menu_h - 2 * CONTENT_PADDING,
+        area_w - 2 * CONTENT_PADDING - 2 * frame,
+        area_h - title_height(style) - menu_h - 2 * CONTENT_PADDING - frame,
     )
 
     if allow_scaling:
@@ -106,6 +115,7 @@ def prepare_window(
     w, h = window_size(
         window.content_image,
         window.menu_items,
+        style=style,
     )
 
     if w > area_w or h > area_h or MIN_WIDTH > area_w:
@@ -143,12 +153,14 @@ def place_windows(
 
     left, top, right, bottom = _work_area(size, desktop)
     area_size = (right - left, bottom - top)
+    style = desktop["style"]
 
     prepared = [
         prepare_window(
             window,
             area_size,
             allow_scaling=can_scale,
+            style=style,
         )
         for window, can_scale in zip(windows, scalable)
     ]
@@ -157,14 +169,13 @@ def place_windows(
     ordered = sorted(
         enumerate(prepared),
         key=lambda item: (
+            lambda dimensions: dimensions[0] * dimensions[1]
+        )(
             window_size(
                 item[1].content_image,
                 item[1].menu_items,
-            )[0]
-            * window_size(
-                item[1].content_image,
-                item[1].menu_items,
-            )[1]
+                style=style,
+            )
         ),
         reverse=True,
     )
@@ -177,6 +188,7 @@ def place_windows(
         w, h = window_size(
             window.content_image,
             window.menu_items,
+            style=style,
         )
 
         max_x = right - w

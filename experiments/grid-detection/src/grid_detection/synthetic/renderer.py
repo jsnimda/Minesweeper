@@ -307,6 +307,7 @@ def render_scene(
                 window_size(
                     window.content_image,
                     window.menu_items,
+                    style=desktop["style"],
                 )
             ),
             "scale": round(

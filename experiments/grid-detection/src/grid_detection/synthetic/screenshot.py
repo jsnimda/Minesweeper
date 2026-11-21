@@ -81,6 +81,7 @@ def compose_screenshot(
         w, h = window_size(
             window.content_image,
             window.menu_items,
+            style=desktop["style"],
         )
 
         extent = (x, y, x + w, y + h)

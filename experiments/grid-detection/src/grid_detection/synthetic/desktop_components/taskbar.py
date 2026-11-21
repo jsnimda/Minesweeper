@@ -545,7 +545,8 @@ def _draw_taskbar(surface, size, desktop, colors):
             start_path.lineTo(button_x, button_y + button_h)
             start_path.close()
 
-            canvas.drawPath(start_path, _paint("#39883E"))
+            # Match the Classic Start button to the desktop accent.
+            canvas.drawPath(start_path, _paint(colors["accent"]))
 
             # Smaller version of the same waving flag.
             draw_waving_flag(
@@ -572,7 +573,7 @@ def _draw_taskbar(surface, size, desktop, colors):
                 start_blob,
                 start_text_x + 1,
                 start_text_y + 1,
-                _paint("#1B5727", 150),
+                _paint("#000000", 105),
             )
 
             # White foreground.
