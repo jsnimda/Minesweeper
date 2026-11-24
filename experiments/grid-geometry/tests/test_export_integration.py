@@ -1,29 +1,15 @@
 from dataclasses import asdict
 from importlib import import_module
-import os
 from pathlib import Path
 import sys
 
 import numpy as np
-import pytest
 import torch
 from torch.utils.data import DataLoader
 
 from grid_geometry.dataset import GeometryDataset
 from grid_geometry.heatmaps import geometry_heatmaps
 from grid_geometry.model import GridUNet
-
-
-@pytest.fixture
-def diagnostic_root():
-    project = Path(__file__).resolve().parents[1]
-    path = os.environ.get("GRID_GEOMETRY_DIAGNOSTICS")
-    if path is not None:
-        return Path(path)
-    default = project / "outputs" / "geometry-diagnostics" / "geometry"
-    if not default.is_dir():
-        pytest.skip("Export diagnostic samples with scripts/export_geometry_diagnostics.py")
-    return default
 
 
 def test_actual_export_matches_reference_heatmaps(diagnostic_root, monkeypatch):

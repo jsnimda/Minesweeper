@@ -1,4 +1,19 @@
+import os
+from pathlib import Path
+
 import pytest
+
+
+@pytest.fixture
+def diagnostic_root():
+    project = Path(__file__).resolve().parents[1]
+    path = os.environ.get("GRID_GEOMETRY_DIAGNOSTICS")
+    if path is not None:
+        return Path(path)
+    default = project / "outputs" / "geometry-diagnostics" / "geometry"
+    if not default.is_dir():
+        pytest.skip("Export diagnostic samples with scripts/export_geometry_diagnostics.py")
+    return default
 
 
 @pytest.fixture
