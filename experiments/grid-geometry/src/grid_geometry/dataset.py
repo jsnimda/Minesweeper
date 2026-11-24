@@ -59,10 +59,22 @@ class GeometryDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     ) -> None:
         if split not in ("train", "val"):
             raise ValueError("split must be 'train' or 'val'")
+        self._initialize(Path(geometry_root) / split, canvas_size, sigma, include_outer)
+
+    @classmethod
+    def from_split_directory(
+        cls, folder: str | Path, *, canvas_size: Size = DEFAULT_CANVAS_SIZE,
+        sigma: float = DEFAULT_SIGMA, include_outer: bool = True,
+    ) -> "GeometryDataset":
+        """Read a named evaluation directory with the same exported PNG/JSON schema."""
+        dataset = cls.__new__(cls)
+        dataset._initialize(Path(folder), canvas_size, sigma, include_outer)
+        return dataset
+
+    def _initialize(self, folder: Path, canvas_size: Size, sigma: float, include_outer: bool) -> None:
         self.canvas_size = validate_canvas_size(canvas_size)
         self.sigma = validate_sigma(sigma)
         self.include_outer = include_outer
-        folder = Path(geometry_root) / split
         if not folder.is_dir():
             raise FileNotFoundError(f"Geometry split directory does not exist: {folder}")
 

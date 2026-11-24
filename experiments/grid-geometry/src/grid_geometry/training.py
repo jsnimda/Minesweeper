@@ -24,13 +24,22 @@ class HeatmapLoss:
     channels: torch.Tensor
 
 
+def weighted_squared_errors(
+    probabilities: torch.Tensor, targets: torch.Tensor, weight: float = 10.0,
+) -> torch.Tensor:
+    """The shared training and evaluation objective before reduction."""
+    if (
+        probabilities.ndim != 4 or probabilities.shape[1] != 3
+        or probabilities.shape != targets.shape or not probabilities.numel()
+    ):
+        raise ValueError("predictions and targets must have equal, nonempty [B, 3, H, W] shapes")
+    actual = targets.float()
+    return (1 + weight * actual) * (probabilities.float() - actual).square()
+
+
 def weighted_mse(logits: torch.Tensor, targets: torch.Tensor, weight: float = 10.0) -> HeatmapLoss:
     """Legacy sigmoid weighted MSE, with each channel reduced in float32."""
-    if logits.ndim != 4 or logits.shape[1] != 3 or logits.shape != targets.shape or not logits.numel():
-        raise ValueError("logits and targets must have equal, nonempty [B, 3, H, W] shapes")
-    probabilities = logits.float().sigmoid()
-    actual = targets.float()
-    weighted_error = (1 + weight * actual) * (probabilities - actual).square()
+    weighted_error = weighted_squared_errors(logits.float().sigmoid(), targets, weight)
     channels = weighted_error.mean(dim=(0, 2, 3))
     return HeatmapLoss(channels.mean(), channels)
 

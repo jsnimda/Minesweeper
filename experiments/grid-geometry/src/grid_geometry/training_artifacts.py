@@ -92,20 +92,24 @@ def cpu_snapshot(value):
     return value
 
 
-def dataset_identity(config: DatasetConfig, *, train_count: int, validation_count: int) -> dict:
+def inventory_sha256(root: Path, splits: tuple[str, ...]) -> str:
     digest = hashlib.sha256()
-    for split in (config.train_split, config.validation_split):
+    for split in splits:
         paths = sorted(
-            (path for path in (config.root / split).iterdir() if path.suffix in (".png", ".json")),
+            (path for path in (root / split).iterdir() if path.suffix in (".png", ".json")),
             key=lambda path: path.name,
         )
         for path in paths:
             stat = path.stat()
             entry = [split, path.name, stat.st_size, stat.st_mtime_ns]
             digest.update((json.dumps(entry) + "\n").encode("utf-8"))
+    return digest.hexdigest()
+
+
+def dataset_identity(config: DatasetConfig, *, train_count: int, validation_count: int) -> dict:
     return {
         "method": "sha256 of sorted split, filename, size, and mtime_ns records",
-        "inventory_sha256": digest.hexdigest(),
+        "inventory_sha256": inventory_sha256(config.root, (config.train_split, config.validation_split)),
         "train_samples": train_count,
         "validation_samples": validation_count,
     }
