@@ -14,7 +14,7 @@ from torch import nn
 from grid_geometry import evaluate
 from grid_geometry.dataset import GeometryDataset
 from grid_geometry.evaluation_artifacts import SampleRecord, hypothesis_record
-from grid_geometry.evaluation_metrics import BoardEstimate
+from grid_geometry.evaluation_metrics import BoardDecoding, BoardEstimate, truth_from_geometry
 from grid_geometry.geometry import Geometry
 from grid_geometry.lattice import EdgeObservation
 from grid_geometry.model import GridUNet
@@ -149,6 +149,12 @@ def test_evaluation_outputs_for_named_split_with_uneven_batches_and_exports(eval
     assert result["boards"] == 3 and set(result["geometry"]) == {"independent", "joint"}
     assert result["latency"]["inference_batch_ms"]["count"] == 2
     assert result["latency"]["preprocessing_ms"]["count"] == 3
+    assert result["latency"]["independent_validation_ms"]["count"] == 3
+    for strict in result["validation"].values():
+        assert strict["accepted"] == {"count": 0, "total": 3, "rate": 0}
+        assert strict["geometry_accuracy_among_accepted"]["rate"] is None
+        assert strict["rejection_reasons"]["no_hypothesis"]["count"] == 3
+        assert "labelled_completeness" not in strict
     for stats in result["geometry"].values():
         assert stats["statuses"]["insufficient_evidence"]["count"] == 3
         assert stats["center_max_px"]["count"] == 0
@@ -169,7 +175,11 @@ def test_evaluation_outputs_for_named_split_with_uneven_batches_and_exports(eval
     assert len(manifest) == 3
     assert manifest[0]["coordinates"]["source_scene_crop_xyxy"]
     first = manifest[0]
-    assert set(json.loads((manifest_path.parent / first["hypotheses"]).read_text())) == {"independent", "joint"}
+    predictions = json.loads((manifest_path.parent / first["hypotheses"]).read_text())
+    assert set(predictions) == {"independent", "joint"}
+    assert first["validation"]["joint"] == predictions["joint"]["validation"]
+    assert predictions["joint"]["status"] == "insufficient_evidence"
+    assert predictions["joint"]["validation"]["status"] == "rejected"
     with np.load(manifest_path.parent / first["probabilities"], allow_pickle=False) as archive:
         values = archive["probabilities"]
         assert values.dtype == np.float32 and values.shape == (3, 32, 40)
@@ -181,6 +191,60 @@ def test_evaluation_outputs_for_named_split_with_uneven_batches_and_exports(eval
     with pytest.raises(ValueError, match="already exists"):
         evaluate.evaluate(config)
     assert (output / "metrics.json").read_bytes() == saved_metrics
+
+
+def test_fitted_but_strictly_rejected_prediction_exports_local_support(evaluation_run, tmp_path, monkeypatch):
+    config, _ = evaluation_run
+    dataset = GeometryDataset.from_split_directory(config.dataset_root / config.split, canvas_size=(40, 32))
+    truth = truth_from_geometry(dataset.load_sample(0).geometry)
+    estimate = BoardEstimate(
+        truth.origin_x + truth.pitch_x * np.arange(truth.columns + 1),
+        truth.origin_y + truth.pitch_y * np.arange(truth.rows + 1),
+        tuple(EdgeObservation(position, 1, False) for position in truth.visible_extent),
+    )
+    historical = BoardDecoding("fitted", (estimate,))
+    monkeypatch.setattr(evaluate, "decode_predictions", lambda *_: ({"independent": historical}, {}))
+    labels = tmp_path / "labels.json"
+    labels.write_text('{"scene-0": false, "scene-1": true}')
+    thresholds = tmp_path / "validation.toml"
+    thresholds.write_text("[validation]\nmax_boundary_gap = 2\n")
+    config = replace(config, decoder="independent", save_hypotheses=True, validation_config=thresholds,
+                     completeness_labels=labels)
+    result = evaluate.evaluate(config)
+    assert result["geometry"]["independent"]["accepted"]["count"] == 3
+    stats = result["validation"]["independent"]
+    assert stats["accepted"]["count"] == 0 and stats["rejected_correct"]["count"] >= 1
+    assert stats["labelled_completeness"]["boards"] == 2
+    assert stats["labelled_completeness"]["complete_board_rejection"]["count"] == 1
+    settings = json.loads((config.output_dir / "evaluation.json").read_text())
+    assert settings["validation"]["thresholds"]["max_boundary_gap"] == 2
+    assert settings["validation"]["completeness_labels"]["boards"] == 2
+    with (config.output_dir / "boards.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    assert [row["observation_complete"] for row in rows] == ["False", "True", ""]
+    assert rows[0]["status"] == "fitted" and rows[0]["validation_status"] == "rejected"
+    assert rows[0]["validation_center_coverage"] == "0.0"
+    assert "center_coverage" in json.loads(rows[0]["validation_reasons"])
+    predictions = json.loads((config.output_dir / "predictions" / "000000.json").read_text())
+    strict = predictions["independent"]["validation"]
+    assert strict["support"]["centers"]["supported"] == [[False] * 3] * 2
+    assert len(strict["support"]["vertical"]["continuity"]) == 2
+    assert any("rejected_correct_geometry" in name for name in result["visualizations"])
+
+
+def test_historical_mode_and_invalid_labels(evaluation_run, tmp_path):
+    config, _ = evaluation_run
+    labels = tmp_path / "labels.json"
+    labels.write_text('{"wrong-id": true}')
+    with pytest.raises(ValueError, match="unknown sample IDs"):
+        evaluate.evaluate(replace(config, completeness_labels=labels))
+    labels.write_text('{"scene-0": 0}')
+    with pytest.raises(ValueError, match="boolean"):
+        evaluate.evaluate(replace(config, completeness_labels=labels))
+    assert not config.output_dir.exists()
+    result = evaluate.evaluate(replace(config, strict_validation=False, visualizations=0))
+    assert result["validation"] == {}
+    assert not any(name.endswith("_validation_ms") for name in result["latency"])
 
 
 def test_source_crop_and_scene_export_keep_fractional_and_censored_coordinates(annotation):
@@ -213,6 +277,7 @@ def test_cli_heatmap_only_with_spawn_and_no_prediction_exports(evaluation_run):
     assert "Evaluated 3 boards" in process.stdout
     result = json.loads((config.output_dir / "metrics.json").read_text())
     assert result["geometry"] == {}
+    assert result["validation"] == {}
     assert not any(name.endswith("joint_total_ms") for name in result["latency"])
     assert not (config.output_dir / "predictions").exists()
 

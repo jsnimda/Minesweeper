@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import json
 from pathlib import Path
+from textwrap import wrap
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -10,6 +11,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 from .evaluation_metrics import BoardDecoding, BoardEstimate, BoardTruth, SIDES
 from .geometry import Geometry
 from .preprocessing import ImageTransform
+from .validation import ValidationResult
 
 
 @dataclass(frozen=True, eq=False)
@@ -92,6 +94,7 @@ def hypothesis_record(estimate: BoardEstimate, sample: SampleRecord) -> dict:
 def export_prediction(
     folder: Path, sample: SampleRecord, truth: BoardTruth, probabilities: np.ndarray,
     decodings: dict[str, BoardDecoding], *, save_heatmaps: bool, save_hypotheses: bool,
+    validations: dict[str, ValidationResult] | None = None, observation_complete: bool | None = None,
 ) -> dict:
     stem = f"{sample.index:06d}"
     record = {
@@ -107,6 +110,10 @@ def export_prediction(
             "center_x": truth.centers[0, :, 0].tolist(), "center_y": truth.centers[:, 0, 1].tolist(),
         },
     }
+    if observation_complete is not None:
+        record["observation_complete"] = observation_complete
+    if validations:
+        record["validation"] = {method: result.to_dict() for method, result in validations.items()}
     if save_heatmaps:
         filename = f"{stem}.npz"
         np.savez_compressed(folder / filename, probabilities=np.asarray(probabilities, dtype=np.float32))
@@ -120,6 +127,8 @@ def export_prediction(
             }
             for method, decoding in decodings.items()
         }
+        for method, result in (validations or {}).items():
+            hypotheses[method]["validation"] = result.to_dict(include_support=True)
         (folder / filename).write_text(
             json.dumps(hypotheses, allow_nan=False, indent=2) + "\n", encoding="utf-8",
         )
@@ -134,6 +143,7 @@ class _Preview:
     targets: np.ndarray
     probabilities: np.ndarray
     decodings: dict[str, BoardDecoding]
+    validations: dict[str, ValidationResult]
     outcome: str
 
 
@@ -147,12 +157,14 @@ class PreviewSelection:
 
     def consider(
         self, sample: SampleRecord, image: np.ndarray, targets: np.ndarray, probabilities: np.ndarray,
-        decodings: dict[str, BoardDecoding], outcome: str,
+        decodings: dict[str, BoardDecoding], outcome: str, *, validations: dict[str, ValidationResult] | None = None,
     ) -> None:
         key = (outcome, sample.style)
         if not self.limit or key in self.examples or (outcome in self.outcomes and len(self.examples) >= self.limit):
             return
-        self.examples[key] = _Preview(sample, image.copy(), targets.copy(), probabilities.copy(), decodings, outcome)
+        self.examples[key] = _Preview(
+            sample, image.copy(), targets.copy(), probabilities.copy(), decodings, validations or {}, outcome,
+        )
         self.outcomes.add(outcome)
 
     def write(self, folder: Path) -> list[str]:
@@ -205,6 +217,66 @@ def _draw_prediction(image: Image.Image, estimate: BoardEstimate) -> Image.Image
     return overlay
 
 
+def draw_validation_support(image: Image.Image, estimate: BoardEstimate, result: ValidationResult) -> Image.Image:
+    """Overlay supported centers and segments on a canvas in input coordinates."""
+    overlay = image.copy()
+    if result.centers is None:
+        return overlay
+    draw = ImageDraw.Draw(overlay, "RGBA")
+    x_edges, y_edges = estimate.x_edges - 0.5, estimate.y_edges - 0.5
+    supported, missing = (67, 216, 201, 180), (255, 91, 104, 245)
+    for row, col in np.ndindex(result.vertical.supported.shape):
+        x = x_edges[col + 1]
+        ok = result.vertical.supported[row, col]
+        draw.line((x, y_edges[row], x, y_edges[row + 1]), fill=supported if ok else missing, width=1 if ok else 3)
+    for row, col in np.ndindex(result.horizontal.supported.shape):
+        y = y_edges[row + 1]
+        ok = result.horizontal.supported[row, col]
+        draw.line((x_edges[col], y, x_edges[col + 1], y), fill=supported if ok else missing, width=1 if ok else 3)
+    for side, segments in result.outer.items():
+        offset = result.measurements["outer_edges"][side]["position"] - 0.5
+        for i, ok in enumerate(segments.supported):
+            if side in ("left", "right"):
+                line = (offset, y_edges[i], offset, y_edges[i + 1])
+            else:
+                line = (x_edges[i], offset, x_edges[i + 1], offset)
+            draw.line(line, fill=supported if ok else missing, width=2 if ok else 3)
+    for row, col in np.ndindex(result.centers.supported.shape):
+        x, y = (x_edges[col] + x_edges[col + 1]) / 2, (y_edges[row] + y_edges[row + 1]) / 2
+        ok = result.centers.supported[row, col]
+        radius = 2 if ok else 3
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=supported if ok else missing)
+    return overlay
+
+
+def _validation_panel(image, decoding, result) -> Image.Image:
+    metrics = result.measurements
+    lines = []
+    if metrics:
+        coverage = []
+        for name in ("center", "vertical", "horizontal"):
+            value = metrics[f"{name}_coverage"]
+            coverage.append("n/a" if value is None else f"{value:.0%}")
+        lines.extend([
+            "Center / vertical / horizontal",
+            " / ".join(coverage),
+            f"Largest missing cluster {metrics['largest_missing_center_cluster']}",
+            f"Confirmed outer edges {metrics['confirmed_outer_edges']}/4",
+        ])
+    if result.reasons:
+        reasons = ", ".join(reason.replace("_", " ") for reason in result.reasons)
+        lines.extend(wrap(reasons, width=39))
+    height = max(180, 16 + 15 * len(lines))
+    panel = Image.new("RGB", (464, height), "#132335")
+    if decoding.hypotheses:
+        overlay = draw_validation_support(image, decoding.hypotheses[0], result)
+        preview = ImageOps.contain(overlay, (198, 180))
+        panel.paste(preview, ((198 - preview.width) // 2, (height - preview.height) // 2))
+    draw = ImageDraw.Draw(panel)
+    draw.multiline_text((207, 4), "\n".join(lines), fill="#c9dce9", font=ImageFont.load_default(size=12), spacing=2)
+    return panel
+
+
 def _render_preview(entry: _Preview) -> Image.Image:
     image = Image.fromarray(np.rint(entry.image.transpose(1, 2, 0) * 255).astype(np.uint8))
     geometry = entry.sample.geometry
@@ -216,6 +288,13 @@ def _render_preview(entry: _Preview) -> Image.Image:
         overlays.append((title, _draw_prediction(image, best) if best else image))
 
     rows = [overlays]
+    validation_row = []
+    if entry.validations:
+        validation_row = [
+            (f"{method} strict {result.status}", _validation_panel(image, entry.decodings[method], result))
+            for method, result in entry.validations.items()
+        ]
+        rows.append(validation_row)
     for label, heatmaps in (("Target", entry.targets), ("Predicted", entry.probabilities)):
         panels = []
         for channel, name in zip(heatmaps, ("centers", "verticals", "horizontals"), strict=True):
@@ -224,18 +303,24 @@ def _render_preview(entry: _Preview) -> Image.Image:
         rows.append(panels)
 
     font = ImageFont.load_default(size=13)
-    width, height, header = 1008, 210, 48
-    canvas = Image.new("RGB", (width, header + len(rows) * height), "#132335")
+    width, row_height, header = 1008, 210, 48
+    heights = [
+        max(row_height, max(panel.height + 24 for _, panel in panels)) if panels is validation_row else row_height
+        for panels in rows
+    ]
+    canvas = Image.new("RGB", (width, header + sum(heights)), "#132335")
     draw = ImageDraw.Draw(canvas)
     title = f"{entry.sample.sample_id}  |  {entry.sample.style}  |  {entry.outcome}"
     draw.text((8, 8), title, fill="white", font=font)
-    legend = "Purple annotations   Cyan ideal lattice   Green visible edge   Orange censored endpoint"
+    legend = "Purple annotations   Cyan lattice   Green visible edge   Orange censored endpoint   Red unsupported evidence"
     draw.text((8, 26), legend, fill="#b7d0e2", font=font)
-    for row, panels in enumerate(rows):
+    y = header
+    for panels, height in zip(rows, heights, strict=True):
         panel_width = width // len(panels)
         for column, (label, panel) in enumerate(panels):
-            x, y = column * panel_width, header + row * height
+            x = column * panel_width
             draw.text((x + 8, y + 3), label, fill="white", font=font)
             preview = ImageOps.contain(panel, (panel_width - 12, height - 24))
             canvas.paste(preview, (x + (panel_width - preview.width) // 2, y + 21))
+        y += height
     return canvas
