@@ -1,0 +1,27 @@
+# Paths in this file are relative to the file's directory.
+[dataset]
+root = "../data/geometry-export/geometry"
+train_split = "train"
+validation_split = "val"
+width = 384
+height = 384
+sigma = 2.0
+include_outer = true
+
+[training]
+batch_size = 8
+workers = 0
+optimizer = "adam"
+learning_rate = 0.001
+loss_weight = 10.0
+epochs = 30
+seed = 42
+device = "auto"
+mixed_precision = false
+log_every_batches = 25
+
+[run]
+directory = "../runs/baseline"
+resume = false
+# Zero disables archived epoch checkpoints. last.pt is saved every epoch.
+archive_every = 0
