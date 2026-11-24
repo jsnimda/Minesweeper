@@ -1,0 +1,42 @@
+[project]
+name = "grid-geometry"
+version = "0.1.0"
+description = "Minesweeper grid geometry recognition experiment"
+readme = "README.md"
+requires-python = "==3.13.18"
+dependencies = [
+    "torch==2.15.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.4.0",
+    "pytest>=9.2.0",
+]
+
+[tool.uv]
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu134", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu134"
+url = "https://download.pytorch.org/whl/cu134"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

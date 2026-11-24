@@ -1,0 +1,1 @@
+"""Minesweeper grid geometry recognition."""
