@@ -23,16 +23,16 @@ dev = [
 [tool.uv]
 environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 required-environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu134", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+    { index = "pytorch-cu134", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
 
 [[tool.uv.index]]
