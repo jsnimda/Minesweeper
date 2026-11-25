@@ -7,8 +7,11 @@ from collections.abc import Mapping
 from datetime import date, timedelta
 from typing import TypeVar
 
-from .scope import SCOPE
+from synthetic_scenes.minesweeper.geometry import measure_game_region, measure_grid
 from synthetic_scenes.minesweeper.styles import THEMES
+from synthetic_scenes.render import PlacementError, plan_game_windows
+
+from .scope import SCOPE
 
 T = TypeVar("T")
 
@@ -41,8 +44,8 @@ def choose_group(rng: random.Random, groups: dict):
 def sample_accent_color(rng: random.Random) -> str:
     """Generate a restrained, moderately saturated accent."""
     hue = rng.random()
-    saturation = rng.uniform(0.35, 0.65)
-    lightness = rng.uniform(0.40, 0.60)
+    saturation = rng.uniform(*SCOPE["accent_saturation"])
+    lightness = rng.uniform(*SCOPE["accent_lightness"])
 
     rgb = colorsys.hls_to_rgb(hue, lightness, saturation)
     return "#{:02X}{:02X}{:02X}".format(
@@ -114,11 +117,11 @@ def sample_game(rng: random.Random) -> dict:
 
     config = SCOPE["board_size"][preset]
 
-    if preset == "custom":
+    if "rows" in config:
         rows = rng.randint(*config["rows"])
         columns = rng.randint(*config["columns"])
 
-        density = rng.uniform(*config["mine_density"])
+        density = rng.uniform(*SCOPE["custom_mine_density"])
         mine_count = round(rows * columns * density)
     else:
         rows, columns = config["size"]
@@ -139,42 +142,80 @@ def sample_game(rng: random.Random) -> dict:
         status = choose(rng, SCOPE["finished_status"])
         progress = (
             1.0 if status == "won"
-            else rng.uniform(0.20, 0.95)
+            else rng.uniform(*SCOPE["lost_progress_range"])
         )
     else:
         status = "active"
         low, high = SCOPE["progress_range"][progress_category]
         progress = rng.uniform(low, high)
 
-    theme = THEMES[renderer][0] if rng.random() < .65 else rng.choice(THEMES[renderer])
+    themes = THEMES[renderer]
+    if len(themes) == 1 or rng.random() < SCOPE["default_theme_probability"]:
+        theme = themes[0]
+    else:
+        theme = rng.choice(themes[1:])
+    category = choose(rng, {name: config["weight"]
+                            for name, config in SCOPE["cell_size"].items()})
     appearance = {
-        "style": renderer, "theme": theme, "cell_size": rng.randint(20, 40),
-        "font_family": rng.choice(("Arial", "Tahoma", "Verdana")),
-        "font_scale": rng.uniform(.65, .77), "bold": rng.random() < .9,
+        "style": renderer, "theme": theme,
+        "cell_size": rng.randint(*SCOPE["cell_size"][category]["range"]),
+        "font_family": rng.choice(SCOPE["font_families"]),
+        "font_scale": rng.uniform(*SCOPE["font_scale"]),
+        "bold": rng.random() < SCOPE["bold_probability"],
     }
     if renderer == "google":
-        appearance["boundary_ratio"] = rng.choice((0., .06, .08, .10))
+        appearance["boundary_ratio"] = rng.choice(SCOPE["google_boundary_ratios"])
     if renderer == "windows7":
-        appearance["mine_variant"] = rng.choice(("classic", "flower"))
+        appearance["mine_variant"] = rng.choice(SCOPE["windows7_mine_variants"])
     return {
         "rows": rows, "columns": columns, "mine_count": mine_count,
         "status": status, "progress": progress, "seed": rng.getrandbits(64),
-        "elapsed_seconds": 0 if status == "new" else rng.randint(1, 999),
+        "elapsed_seconds": 0 if status == "new" else rng.randint(*SCOPE["elapsed_seconds"]),
         "appearance": appearance,
     }
 
 
+def _fit_standalone_game(game: dict, mode: str) -> None:
+    """Shrink cell size, keeping the sampled board, to meet the image budget."""
+    appearance = game["appearance"]
+    requested = appearance["cell_size"]
+    minimum = SCOPE["cell_size"]["small"]["range"][0]
+    budget = SCOPE["standalone_image_budget"]
+    measure = measure_grid if mode == "grid" else measure_game_region
+    for cell_size in range(requested, minimum - 1, -1):
+        width, height = measure(game["rows"], game["columns"], appearance["style"], cell_size)
+        if (max(width, height) <= budget["max_dimension"]
+                and width * height <= budget["max_pixels"]):
+            appearance["cell_size"] = cell_size
+            return
+    raise PlacementError("Board cannot fit the standalone image budget at minimum cell size")
+
+
 def sample_scene(seed: int | str = 42) -> dict:
-    """Sample a descriptive request with independent component seeds."""
+    """Sample a scene, resolving cell sizes against its measured rendering area.
+
+    Feasibility shrinks cells before retrying a scene; infeasible desktop layouts
+    and standalone budgets bias the accepted distributions toward smaller boards.
+    """
     rng = random.Random(seed)
     mode = choose(rng, SCOPE["scene_mode"])
-    game_count = choose(rng, SCOPE["game_count"]) if mode == "desktop" else 1
-    windows = [{"type": "minesweeper", "content": sample_game(rng)}
-               for _ in range(game_count)]
-    result = {"mode": mode, "seed": seed, "layout_seed": rng.getrandbits(64), "windows": windows}
     if mode == "desktop":
         _, (width, height) = choose_group(rng, SCOPE["resolution"])
         desktop = sample_desktop(rng)
+        game_count = choose(rng, SCOPE["game_count"])
+    else:
+        game_count = 1
+
+    windows = [{"type": "minesweeper", "content": sample_game(rng)}
+               for _ in range(game_count)]
+    layout_seed = rng.getrandbits(64)
+    result = {"mode": mode, "seed": seed, "layout_seed": layout_seed, "windows": windows}
+    if mode == "desktop":
+        games = [(index, window["content"]) for index, window in enumerate(windows)]
+        plan = plan_game_windows(games, (width, height), desktop, layout_seed)
+        for index, game in games:
+            game["appearance"]["cell_size"] = plan[index]["cell_size"]
+
         cleanliness = choose(rng, SCOPE["cleanliness"])
         extra_count = choose(rng, SCOPE["extra_window_count"][cleanliness])
         windows.extend({"type": choose(rng, SCOPE["application"]), "seed": rng.getrandbits(64)}
@@ -185,6 +226,8 @@ def sample_scene(seed: int | str = 42) -> dict:
             wallpaper["placement"] = choose(rng, SCOPE["wallpaper_placement"])
         result.update(screen={"width": width, "height": height}, desktop=desktop,
                       wallpaper=wallpaper, cleanliness=cleanliness)
+    else:
+        _fit_standalone_game(windows[0]["content"], mode)
     return result
 
 

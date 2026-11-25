@@ -18,7 +18,7 @@ from .sampler import sample_scene
 from .scope import SCOPE
 from .yolo import YOLO_CLASSES, write_yolo_config, yolo_lines
 
-GENERATOR_REVISION = 2  # Lazy layout sampling changes the scene for previous seeds.
+GENERATOR_REVISION = 3  # Expanded sampling and feasibility resolution change seeded scenes.
 _worker_assets = None
 _worker_exclusion_path = None
 _worker_excluded = frozenset()
@@ -52,8 +52,8 @@ def _generate_one(task):
     retries = Counter()
     for attempt in range(task['max_attempts']):
         scene_seed = f'{seed}:{split}:{index}:{attempt}:scene'
-        request = sample_scene(scene_seed)
         try:
+            request = sample_scene(scene_seed)
             image, resolved, annotations = render_scene(
                 request, scene_details=task['scene_details'], wallpaper_assets=_worker_assets)
         except PlacementError as exc:

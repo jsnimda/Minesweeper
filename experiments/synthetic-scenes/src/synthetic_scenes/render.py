@@ -74,7 +74,11 @@ def _wallpaper(size, spec, assets=None):
     return pillow_to_image(image), {'category': category, 'seed': spec['seed'], 'asset': str(path), 'placement': placement, **actual}
 
 
-def _plan(games, size, desktop, seed):
+def plan_game_windows(games, size, desktop, seed):
+    """Measure and pack complete game windows within the desktop work area.
+
+    Return per-window positions and effective cell sizes, or raise PlacementError.
+    """
     left, top, right, bottom = _work_area(size, desktop)
     rng = random.Random(seed)
     for attempt in range(60):
@@ -129,7 +133,7 @@ def render_scene(specification, *, scene_details=False, cell_details=False, mine
         if specification['screen'].get('scale', 1) != 1:
             raise ValueError('Display scaling is not supported')
         desktop = {'accent_color': None, **specification['desktop']}
-        plan = _plan(games, size, desktop, specification.get('layout_seed', seed))
+        plan = plan_game_windows(games, size, desktop, specification.get('layout_seed', seed))
         wallpaper, wallpaper_info = _wallpaper(size, specification['wallpaper'], wallpaper_assets)
         if scene_details:
             resolved['resolved_wallpaper'] = wallpaper_info

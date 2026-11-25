@@ -56,7 +56,7 @@ SCOPE = {
             ],
         },
         "widescreen": {
-            "weight": 40,
+            "weight": 35,
             "options": [
                 (1280, 720), (1366, 768),
                 (1600, 900), (1920, 1080),
@@ -65,7 +65,7 @@ SCOPE = {
         "high_res": {
             "weight": 20,
             "options": [
-                (2560, 1440), (2880, 1800),
+                (2560, 1440), (2880, 1800), (3840, 2160), (2560, 1600),
             ],
         },
         "ultrawide": {
@@ -73,6 +73,10 @@ SCOPE = {
             "options": [
                 (2560, 1080), (3440, 1440),
             ],
+        },
+        "portrait": {
+            "weight": 5,
+            "options": [(1080, 1920)],
         },
     },
     # Scene complexity
@@ -115,32 +119,37 @@ SCOPE = {
     },
     "game_renderer": {"classic": 25, "windows7": 25, "microsoft": 25, "google": 25},
     "board_size": {
-        "beginner": {
-            "weight": 35,
-            "size": (9, 9),
-            "mines": 10,
-        },
-        "intermediate": {
-            "weight": 30,
-            "size": (16, 16),
-            "mines": 40,
-        },
-        "expert": {
-            "weight": 20,
-            "size": (16, 30),
-            "mines": 99,
-        },
-        "custom": {
-            "weight": 15,
-            "rows": (9, 24),
-            "columns": (9, 30),
-            "mine_density": (0.12, 0.20),
-        },
+        "beginner": {"weight": 25, "size": (9, 9), "mines": 10},
+        "intermediate": {"weight": 25, "size": (16, 16), "mines": 40},
+        "expert": {"weight": 20, "size": (16, 30), "mines": 99},
+        "small_custom": {"weight": 5, "rows": (5, 12), "columns": (5, 12)},
+        "normal_custom": {"weight": 15, "rows": (8, 30), "columns": (8, 40)},
+        "large_custom": {"weight": 7, "rows": (20, 60), "columns": (20, 100)},
+        "extreme_custom": {"weight": 3, "rows": (5, 100), "columns": (5, 100)},
     },
+    "custom_mine_density": (0.12, 0.20),
+    "cell_size": {
+        "small": {"weight": 20, "range": (12, 19)},
+        "normal": {"weight": 50, "range": (20, 32)},
+        "large": {"weight": 25, "range": (33, 48)},
+        "extra_large": {"weight": 5, "range": (49, 64)},
+    },
+    # Limits apply to the rendered game/grid before capture augmentation.
+    "standalone_image_budget": {"max_dimension": 4096, "max_pixels": 12_000_000},
+    "default_theme_probability": 0.65,
+    "font_families": ("Arial", "Tahoma", "Verdana"),
+    "font_scale": (0.65, 0.77),
+    "bold_probability": 0.9,
+    "google_boundary_ratios": (0.0, 0.06, 0.08, 0.10),
+    "windows7_mine_variants": ("classic", "flower"),
+    "accent_saturation": (0.35, 0.65),
+    "accent_lightness": (0.40, 0.60),
+    "lost_progress_range": (0.20, 0.95),
+    "elapsed_seconds": (1, 999),
     "game_progress": {
-        "hidden": 10,
+        "hidden": 20,
         "early": 25,
-        "mid": 40,
+        "mid": 30,
         "late": 20,
         "finished": 5,
     },
