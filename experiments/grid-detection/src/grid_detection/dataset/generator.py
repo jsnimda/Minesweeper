@@ -18,7 +18,7 @@ from .sampler import sample_scene
 from .scope import SCOPE
 from .yolo import YOLO_CLASSES, write_yolo_config, yolo_lines
 
-GENERATOR_REVISION = 3  # Expanded sampling and feasibility resolution change seeded scenes.
+GENERATOR_REVISION = 4  # Procedural game-region rendering changed.
 _worker_assets = None
 _worker_exclusion_path = None
 _worker_excluded = frozenset()
