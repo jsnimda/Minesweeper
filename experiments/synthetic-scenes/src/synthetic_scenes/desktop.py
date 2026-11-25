@@ -1,8 +1,9 @@
 """Lightweight desktop and application chrome, independent of Minesweeper."""
 from pathlib import Path
 
-import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+from .wallpaper import render_procedural_wallpaper, sample_procedural_subtype
 
 
 CHROME = {
@@ -70,16 +71,8 @@ def wallpaper(size, rng, path=None):
     if path is not None:
         with Image.open(Path(path)) as image:
             return ImageOps.fit(image.convert('RGB'), size)
-    w, h = size
-    # Broad abstract color fields, not an exact OS wallpaper.
-    a = np.array([rng.randint(25, 115) for _ in range(3)], dtype=float)
-    b = np.array([rng.randint(65, 180) for _ in range(3)], dtype=float)
-    x = np.linspace(0, 1, w)[None, :]
-    y = np.linspace(0, 1, h)[:, None]
-    t = (.55*x + .45*y)[..., None]
-    glow = 25*np.exp(-((x-.3)**2 + (y-.25)**2)/.12)[..., None]
-    pixels = a*(1-t) + b*t + glow
-    return Image.fromarray(np.clip(pixels, 0, 255).astype('uint8'))
+    subtype = sample_procedural_subtype(rng)
+    return render_procedural_wallpaper(size, rng, subtype)
 
 
 def draw_taskbar(image):
