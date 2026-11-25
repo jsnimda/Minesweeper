@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 def _color(value: str) -> int:
@@ -54,7 +52,7 @@ def render_spreadsheet(
     columns: int = 8,
     cell_width: int = 92,
     cell_height: int = 27,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render a deterministic spreadsheet with no target boxes."""
     if not 4 <= rows <= 100:
         raise ValueError("rows must be between 4 and 100")
@@ -294,4 +292,4 @@ def render_spreadsheet(
         accent, 2,
     )
 
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

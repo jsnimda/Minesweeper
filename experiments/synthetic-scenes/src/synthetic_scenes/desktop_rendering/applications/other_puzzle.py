@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 TILE_COLORS = {
@@ -286,7 +284,7 @@ def render_other_puzzle(
     width: int = 520,
     height: int = 610,
     puzzle_type: str | None = None,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render a deterministic non-Minesweeper grid puzzle.
 
     puzzle_type: "2048" or "sliding"
@@ -404,4 +402,4 @@ def render_other_puzzle(
         11, text_color,
     )
 
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

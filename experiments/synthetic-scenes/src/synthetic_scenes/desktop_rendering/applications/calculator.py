@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 THEMES = {
@@ -183,10 +181,10 @@ def render_calculator(
     width: int = 340,
     height: int = 520,
     theme: str | None = None,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render a deterministic calculator application.
 
-    Returns a Pillow image and no Minesweeper annotations.
+    Returns a Skia image and no Minesweeper annotations.
     """
     if width < 260 or height < 420:
         raise ValueError("Calculator canvas is too small")
@@ -353,4 +351,4 @@ def render_calculator(
                 foreground,
             )
 
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

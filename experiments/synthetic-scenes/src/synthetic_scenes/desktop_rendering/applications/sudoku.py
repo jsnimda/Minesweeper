@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 def _paint(color: int, *, stroke: float = 0) -> skia.Paint:
@@ -61,7 +59,7 @@ def render_sudoku(
     *,
     clues: int = 32,
     cell_size: int = 36,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render Sudoku content and empty Minesweeper annotations.
 
     The generated clues are consistent with a valid solved grid.
@@ -187,4 +185,4 @@ def render_sudoku(
         )
 
     # Sudoku is a negative example for Minesweeper detection.
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

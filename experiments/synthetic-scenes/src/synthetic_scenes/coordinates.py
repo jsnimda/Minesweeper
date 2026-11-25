@@ -1,5 +1,4 @@
 """Axis-aligned geometry; boxes use half-open xyxy and float coordinates."""
-from copy import deepcopy
 
 
 def transform_box(box, sx=1., sy=1., dx=0., dy=0.):
@@ -8,19 +7,26 @@ def transform_box(box, sx=1., sy=1., dx=0., dy=0.):
 
 
 def transform_board(metadata, sx=1., sy=1., dx=0., dy=0.):
-    """Transform image-space annotations without modifying source style parameters."""
-    result = deepcopy(metadata)
+    """Transform annotations without mutating the input.
+
+    Unchanged nested metadata, including style parameters, may be shared.
+    """
+    result = dict(metadata)
     result['boxes'] = {
         name: transform_box(box, sx, sy, dx, dy)
         for name, box in metadata['boxes'].items()
     }
-    result['cell_boxes'] = [
-        [transform_box(box, sx, sy, dx, dy) for box in row]
-        for row in metadata['cell_boxes']
-    ]
-    result['x_edges'] = [x*sx + dx for x in metadata['x_edges']]
-    result['y_edges'] = [y*sy + dy for y in metadata['y_edges']]
-    result['grid_origin'] = (result['x_edges'][0], result['y_edges'][0])
+    if 'cell_boxes' in metadata:
+        result['cell_boxes'] = [
+            [transform_box(box, sx, sy, dx, dy) for box in row]
+            for row in metadata['cell_boxes']
+        ]
+        result['x_edges'] = [x*sx + dx for x in metadata['x_edges']]
+        result['y_edges'] = [y*sy + dy for y in metadata['y_edges']]
+        result['grid_origin'] = (result['x_edges'][0], result['y_edges'][0])
+    elif 'grid_origin' in metadata:
+        x, y = metadata['grid_origin']
+        result['grid_origin'] = (x*sx + dx, y*sy + dy)
     result['coordinate_space'] = 'image'
     if 'window_box' in metadata:
         result['window_box'] = transform_box(metadata['window_box'], sx, sy, dx, dy)

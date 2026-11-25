@@ -4,7 +4,6 @@ import colorsys
 import math
 import random
 
-from PIL import Image
 import skia
 
 
@@ -75,8 +74,8 @@ def _draw_radial(canvas, width, height, rng, family, overlay=False):
     canvas.drawPaint(skia.Paint(Shader=shader))
 
 
-def render_procedural_wallpaper(size, rng: random.Random, subtype: str) -> Image.Image:
-    """Render a selected subtype to an RGB Pillow image using the supplied RNG."""
+def render_procedural_wallpaper(size, rng: random.Random, subtype: str, *, native=False):
+    """Render a wallpaper as Skia when native, otherwise as an RGB Pillow image."""
     if subtype not in PROCEDURAL_SUBTYPE_WEIGHTS:
         raise ValueError(f'Unknown procedural wallpaper subtype: {subtype}')
     width, height = size
@@ -98,7 +97,8 @@ def render_procedural_wallpaper(size, rng: random.Random, subtype: str) -> Image
             _draw_linear(canvas, width, height, rng, family)
         for _ in range(rng.randint(2, 4)):
             _draw_radial(canvas, width, height, rng, family, overlay=True)
-    pixels = surface.makeImageSnapshot().toarray(
-        colorType=skia.ColorType.kRGBA_8888_ColorType
-    )
-    return Image.fromarray(pixels).convert('RGB')
+    image = surface.makeImageSnapshot()
+    if native:
+        return image
+    from .image_conversion import image_to_pillow
+    return image_to_pillow(image)

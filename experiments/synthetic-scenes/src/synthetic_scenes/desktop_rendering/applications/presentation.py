@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 def _color(value: str) -> int:
@@ -314,10 +312,10 @@ def render_presentation(
     *,
     width: int = 900,
     height: int = 620,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render a deterministic slide editor.
 
-    Returns a Pillow image and no Minesweeper target boxes.
+    Returns a Skia image and no Minesweeper target boxes.
     """
     if width < 640 or height < 460:
         raise ValueError("Presentation canvas is too small")
@@ -495,4 +493,4 @@ def render_presentation(
         11, muted,
     )
 
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

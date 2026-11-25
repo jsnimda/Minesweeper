@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 THEMES = {
@@ -244,7 +242,7 @@ def render_media_viewer(
     height: int = 600,
     theme: str | None = None,
     media_type: str | None = None,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render a synthetic photo viewer with a thumbnail filmstrip."""
     if width < 560 or height < 420:
         raise ValueError("Media viewer canvas is too small")
@@ -428,4 +426,4 @@ def render_media_viewer(
         11, colors["muted"],
     )
 
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

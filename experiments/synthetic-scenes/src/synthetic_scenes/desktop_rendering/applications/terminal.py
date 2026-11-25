@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 THEMES = {
@@ -184,10 +182,10 @@ def render_terminal(
     height: int = 490,
     theme: str | None = None,
     session: str | None = None,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render a deterministic terminal emulator.
 
-    Returns a Pillow image and no Minesweeper annotations.
+    Returns a Skia image and no Minesweeper annotations.
     """
     if width < 480 or height < 300:
         raise ValueError("Terminal canvas is too small")
@@ -333,4 +331,4 @@ def render_terminal(
 
     canvas.restore()
 
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

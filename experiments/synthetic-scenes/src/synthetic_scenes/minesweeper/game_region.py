@@ -4,7 +4,8 @@
 import numpy as np
 import skia
 
-from .drawing import circle, color, font_for, gradient, line, rect, rounded_rect, snapshot, text
+from ..image_conversion import image_to_pillow
+from .drawing import circle, color, font_for, gradient, line, rect, rounded_rect, text
 from .renderer import render_board
 from .geometry import region_layout
 from .symbols import draw_flag, draw_mine
@@ -103,20 +104,20 @@ def _control(canvas, box, value, style, kind, variant, font, theme):
     canvas.restore()
 
 
-def render_game_region(game, **board_options):
+def render_game_region(game, *, native=False, **board_options):
     """Render a game panel (not OS title bar), with region-local annotations.
 
     Accepts the same keyword arguments as render_board. Windows 7 uses
     bottom controls; other styles use top controls. Only Classic exposes
     a reset button in this initial set of procedural panels.
     """
-    grid, metadata = render_board(game, **board_options)
+    grid, metadata = render_board(game, native=True, **board_options)
     style = metadata['style']
     theme = metadata['theme']
     params = metadata['style_parameters']
     s = params['cell_size']
     variant = params['mine_variant']
-    layout = region_layout(grid.size, style, s)
+    layout = region_layout((grid.width(), grid.height()), style, s)
     width, height = layout['size']
     gx, gy = layout['grid_origin']
     pad = layout['pad']
@@ -130,7 +131,7 @@ def render_game_region(game, **board_options):
     canvas=surface.getCanvas()
     remaining=int(np.count_nonzero(game['board']==-1)-np.count_nonzero(game['flags']))
     elapsed = min(999, int(game['elapsed_seconds']))
-    boxes={'game_region':(0,0,width,height),'grid':_box(gx,gy,grid.width,grid.height)}
+    boxes={'game_region':(0,0,width,height),'grid':_box(gx,gy,grid.width(),grid.height())}
     if style=='classic':
         from .styles.classic import THEMES
         palette=THEMES[theme]
@@ -138,7 +139,7 @@ def render_game_region(game, **board_options):
         border=max(1,round(s*.10))
         _bevel(canvas,(0,0,width,height),border,*palette)
         _bevel(canvas,(margin//2,pad//2,width-margin//2,header+pad//2),border,*palette,sunken=True)
-        _bevel(canvas,(gx-border,gy-border,gx+grid.width+border,gy+grid.height+border),border,*palette,sunken=True)
+        _bevel(canvas,(gx-border,gy-border,gx+grid.width()+border,gy+grid.height()+border),border,*palette,sunken=True)
         reset=_box((width-control_h)//2,cy,control_h,control_h)
         _digital(canvas,left,remaining)
         _digital(canvas,right,elapsed)
@@ -163,13 +164,16 @@ def render_game_region(game, **board_options):
         _control(canvas,right,elapsed,style,'timer',variant,font,theme)
     boxes['mine_counter']=left
     boxes['timer']=right
-    image=snapshot(surface)
-    image.paste(grid,(gx,gy))
+    canvas.drawImage(grid, gx, gy)
+    image=surface.makeImageSnapshot()
+    if not native:
+        image=image_to_pillow(image)
     metadata['boxes']=boxes
     metadata['grid_origin']=(gx,gy)
-    metadata['x_edges']=[v+gx for v in metadata['x_edges']]
-    metadata['y_edges']=[v+gy for v in metadata['y_edges']]
-    metadata['cell_boxes']=[[(x+gx,y+gy,r+gx,b+gy) for x,y,r,b in row]
-                            for row in metadata['cell_boxes']]
+    if 'cell_boxes' in metadata:
+        metadata['x_edges']=[v+gx for v in metadata['x_edges']]
+        metadata['y_edges']=[v+gy for v in metadata['y_edges']]
+        metadata['cell_boxes']=[[(x+gx,y+gy,r+gx,b+gy) for x,y,r,b in row]
+                                for row in metadata['cell_boxes']]
     metadata['coordinate_space']='game_region'
     return image,metadata

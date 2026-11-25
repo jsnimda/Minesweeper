@@ -14,10 +14,10 @@ RUNS_DIR = PROJECT_ROOT / "runs"
 
 
 def dataset_yaml(name: str) -> Path:
-    """Select a finished dataset produced by the shared YOLO exporter."""
+    """Select a finished dataset produced by the detector generator."""
     root = DATA_DIR / name
     config = json.loads((root / "config.json").read_text(encoding="utf-8"))
-    yaml_path = root / "yolo" / "data.yaml"
+    yaml_path = root / "data.yaml"
     if config["status"] != "complete" or not yaml_path.is_file():
         raise ValueError(f"Expected a complete YOLO dataset at {root}")
     return yaml_path

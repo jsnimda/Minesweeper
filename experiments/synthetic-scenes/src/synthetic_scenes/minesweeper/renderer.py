@@ -2,9 +2,10 @@
 
 import skia
 
+from ..image_conversion import image_to_pillow
 from .board import CellState, get_visible_cells
 from .geometry import cell_gap, measure_grid
-from .drawing import font_for, line, rect, snapshot, text
+from .drawing import font_for, line, rect, text
 from .symbols import draw_flag, draw_mine
 from .styles import classic, google, microsoft, windows7
 
@@ -109,6 +110,9 @@ def render_board(
     digit_palette=None,
     boundary_ratio=.08,
     mine_variant='classic',
+    cell_details=True,
+    native=False,
+    visible_cells=None,
 ):
     """Render a board and its annotations.
 
@@ -137,7 +141,7 @@ def render_board(
         raise ValueError('Expected eight digit colors')
 
     # Resolve the board's visible state and geometry before drawing.
-    cells = get_visible_cells(game)
+    cells = get_visible_cells(game) if visible_cells is None else visible_cells
     opened = _opened_surfaces(game, cells, style)
     rows, columns = cells.shape
     size = cell_size
@@ -192,11 +196,6 @@ def render_board(
         'boxes': {'grid': (0, 0, width, height)},
         'rows': rows,
         'columns': columns,
-        'x_edges': _axis_edges(columns, pitch, gap),
-        'y_edges': _axis_edges(rows, pitch, gap),
-        'cell_boxes': _cell_boxes(rows, columns, size, pitch),
-        'cell_states': cells.tolist(),
-        'opened_surfaces': opened.tolist(),
         'style': style,
         'renderer': RENDERER_IDS[style],
         'source': 'synthetic',
@@ -208,7 +207,13 @@ def render_board(
         'board_seed': game.get('seed'),
         'status': game['status'],
     }
-    return snapshot(surface), metadata
+    if cell_details:
+        metadata.update(x_edges=_axis_edges(columns, pitch, gap),
+                        y_edges=_axis_edges(rows, pitch, gap),
+                        cell_boxes=_cell_boxes(rows, columns, size, pitch),
+                        cell_states=cells.tolist(), opened_surfaces=opened.tolist())
+    image = surface.makeImageSnapshot()
+    return (image if native else image_to_pillow(image)), metadata
 
 
 def render_game_region(game, **board_options):

@@ -5,9 +5,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import skia
-from PIL import Image
 
-from .desktop import draw_desktop, surface_to_pillow
+from .desktop import draw_desktop
 from .generic_window import (
     Box,
     draw_generic_window,
@@ -17,20 +16,11 @@ from .generic_window import (
 
 @dataclass(frozen=True)
 class WindowLayer:
-    content_image: Image.Image
+    content_image: skia.Image
     content_boxes: Mapping[str, Box]
     position: tuple[int, int]
     title: str = "Application"
     menu_items: tuple[str, ...] = ()
-
-
-def _intersects(a: Box, b: Box) -> bool:
-    return (
-        a[0] < b[2]
-        and b[0] < a[2]
-        and a[1] < b[3]
-        and b[1] < a[3]
-    )
 
 
 def _work_area(
@@ -58,28 +48,26 @@ def _work_area(
 
 
 def compose_screenshot(
-    wallpaper: Image.Image,
+    wallpaper: skia.Image,
     size: tuple[int, int],
     desktop: dict,
     windows: Sequence[WindowLayer],
-) -> tuple[Image.Image, list[dict[str, Box]]]:
-    """Return an RGB screenshot and per-window screen boxes.
+) -> tuple[skia.Image, list[dict[str, Box]]]:
+    """Return a Skia screenshot and per-window screen boxes.
 
     Window positions and bounding boxes use integer,
     half-open pixel coordinates.
 
-    Window clipping and overlap are not supported yet.
+    Window clipping is not supported; background windows may overlap.
     """
     width, height = size
     available = _work_area(size, desktop)
 
     # Validate everything before drawing.
-    extents = []
-
     for window in windows:
         x, y = window.position
         w, h = window_size(
-            window.content_image,
+            (window.content_image.width(), window.content_image.height()),
             window.menu_items,
             style=desktop["style"],
         )
@@ -93,8 +81,6 @@ def compose_screenshot(
             raise ValueError(
                 f"Window outside available area: {extent}"
             )
-
-        extents.append(extent)
 
     # One surface shared by the desktop and all windows.
     surface = skia.Surface(width, height)
@@ -120,4 +106,4 @@ def compose_screenshot(
         )
         annotations.append(boxes)
 
-    return surface_to_pillow(surface), annotations
+    return surface.makeImageSnapshot(), annotations

@@ -5,41 +5,14 @@ Renders the sampled shell and visual style.
 Application windows are handled separately.
 """
 
-from io import BytesIO
-
 import skia
-from PIL import Image
+from PIL import Image, ImageOps
+
+from ..image_conversion import image_to_pillow, pillow_to_image
 
 from .desktop_components.dock import _draw_dock
 from .desktop_components.taskbar import _draw_taskbar
 from .desktop_components.top_panel import _draw_top_panel
-
-
-def _cover(wallpaper: Image.Image, size: tuple[int, int]) -> Image.Image:
-    """Resize and center-crop without distorting the wallpaper."""
-    w, h = size
-    scale = max(w / wallpaper.width, h / wallpaper.height)
-
-    scaled = wallpaper.convert("RGBA").resize(
-        (
-            max(w, round(wallpaper.width * scale)),
-            max(h, round(wallpaper.height * scale)),
-        ),
-        Image.Resampling.LANCZOS,
-    )
-
-    left = (scaled.width - w) // 2
-    top = (scaled.height - h) // 2
-    return scaled.crop((left, top, left + w, top + h))
-
-
-def _skia_image(image: Image.Image) -> skia.Image:
-    image = image.convert("RGBA")
-    return skia.Image.frombytes(
-        image.tobytes(),
-        image.size,
-        skia.kRGBA_8888_ColorType,
-    )
 
 
 def _palette(desktop: dict) -> dict:
@@ -81,7 +54,7 @@ def _palette(desktop: dict) -> dict:
 
 def draw_desktop(
     surface: skia.Surface,
-    wallpaper: Image.Image,
+    wallpaper: skia.Image,
     size: tuple[int, int],
     desktop: dict,
 ) -> None:
@@ -95,7 +68,9 @@ def draw_desktop(
         raise ValueError(f"Unsupported shell: {shell}")
 
     canvas = surface.getCanvas()
-    canvas.drawImage(_skia_image(_cover(wallpaper, size)), 0, 0)
+    if (wallpaper.width(), wallpaper.height()) != size:
+        raise ValueError("Wallpaper must already match desktop dimensions")
+    canvas.drawImage(wallpaper, 0, 0)
 
     colors = _palette(desktop)
 
@@ -107,14 +82,6 @@ def draw_desktop(
         _draw_top_panel(surface, size, desktop, colors)
 
 
-def surface_to_pillow(surface: skia.Surface) -> Image.Image:
-    """Convert the final canvas into an RGB Pillow image."""
-    snapshot = surface.makeImageSnapshot()
-    return Image.open(
-        BytesIO(bytes(snapshot.encodeToData()))
-    ).convert("RGB")
-
-
 def render_desktop(
     wallpaper: Image.Image,
     size: tuple[int, int],
@@ -122,5 +89,7 @@ def render_desktop(
 ) -> Image.Image:
     """Standalone convenience renderer for notebook previews."""
     surface = skia.Surface(*size)
-    draw_desktop(surface, wallpaper, size, desktop)
-    return surface_to_pillow(surface)
+    if wallpaper.size != size:
+        wallpaper = ImageOps.fit(wallpaper, size, method=Image.Resampling.LANCZOS)
+    draw_desktop(surface, pillow_to_image(wallpaper), size, desktop)
+    return image_to_pillow(surface.makeImageSnapshot())

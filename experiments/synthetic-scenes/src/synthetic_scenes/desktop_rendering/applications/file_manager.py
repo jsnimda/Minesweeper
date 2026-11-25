@@ -2,10 +2,8 @@
 """Procedural file manager content rendered with Skia."""
 
 import random
-from io import BytesIO
 
 import skia
-from PIL import Image
 
 
 def _color(hex_color: str) -> int:
@@ -89,7 +87,7 @@ def render_file_manager(
     *,
     width: int = 760,
     height: int = 520,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render a deterministic file-manager window content.
 
     No actual filesystem is accessed.
@@ -321,10 +319,6 @@ def render_file_manager(
         11, muted,
     )
 
-    snapshot = surface.makeImageSnapshot()
-    with Image.open(
-        BytesIO(bytes(snapshot.encodeToData()))
-    ) as image:
-        result = image.convert("RGB")
+    result = surface.makeImageSnapshot()
 
     return result, {}

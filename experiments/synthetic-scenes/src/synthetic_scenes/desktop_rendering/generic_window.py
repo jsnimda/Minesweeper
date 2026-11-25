@@ -8,9 +8,8 @@ Returned annotations use screenshot-local half-open boxes.
 from collections.abc import Mapping, Sequence
 
 import skia
-from PIL import Image
 
-from .desktop import _palette, _skia_image
+from .desktop import _palette
 from .desktop_components.primitives import _glass_panel
 
 
@@ -20,7 +19,6 @@ TITLE_HEIGHT = 40
 CLASSIC_TITLE_HEIGHT = 32
 MENU_HEIGHT = 28
 CONTENT_PADDING = 1
-MIN_WIDTH = 240
 AERO_FRAME = 6
 CLASSIC_FRAME = 4
 
@@ -62,33 +60,20 @@ def _line(canvas, x0, y0, x1, y1, color, width=1.5):
     canvas.drawLine(x0, y0, x1, y1, paint)
 
 
-def window_size(
-    content_image: Image.Image,
-    menu_items: Sequence[str] = (),
-    *,
-    style: str = "modern",
-) -> tuple[int, int]:
-    """Return window dimensions without resizing content."""
-    if content_image.width <= 0 or content_image.height <= 0:
+def window_geometry(content_size, menu_items=(), *, style="modern"):
+    """Return total size and content origin using the same frame geometry."""
+    width, height = content_size
+    if width <= 0 or height <= 0:
         raise ValueError("Content must have positive dimensions")
+    frame = AERO_FRAME if style == "aero" else CLASSIC_FRAME if style == "classic" else 0
+    menu_height = MENU_HEIGHT if menu_items else 0
+    origin = (frame + CONTENT_PADDING, title_height(style) + menu_height + CONTENT_PADDING)
+    return ((width + 2 * (frame + CONTENT_PADDING),
+             height + title_height(style) + menu_height + 2 * CONTENT_PADDING + frame), origin)
 
-    frame = (
-        AERO_FRAME if style == "aero"
-        else CLASSIC_FRAME if style == "classic"
-        else 0
-    )
 
-    width = content_image.width + CONTENT_PADDING * 2 + frame * 2
-
-    height = (
-        title_height(style)
-        + (MENU_HEIGHT if menu_items else 0)
-        + content_image.height
-        + CONTENT_PADDING * 2
-        + frame
-    )
-
-    return width, height
+def window_size(content_size, menu_items=(), *, style="modern"):
+    return window_geometry(content_size, menu_items, style=style)[0]
 
 
 def _top_panel_caption_controls(
@@ -526,7 +511,7 @@ def _caption_controls(
 def draw_generic_window(
     surface: skia.Surface,
     position: tuple[int, int],
-    content_image: Image.Image,
+    content_image: skia.Image,
     content_boxes: Mapping[str, Box],
     title: str,
     menu_items: Sequence[str] = (),
@@ -542,8 +527,8 @@ def draw_generic_window(
 
     for name, (x0, y0, x1, y1) in content_boxes.items():
         if not (
-            0 <= x0 < x1 <= content_image.width
-            and 0 <= y0 < y1 <= content_image.height
+            0 <= x0 < x1 <= content_image.width()
+            and 0 <= y0 < y1 <= content_image.height()
         ):
             raise ValueError(
                 f"Invalid content box {name!r}"
@@ -551,7 +536,7 @@ def draw_generic_window(
 
     x, y = position
     w, h = window_size(
-        content_image,
+        (content_image.width(), content_image.height()),
         menu_items,
         style=desktop["style"],
     )
@@ -798,21 +783,11 @@ def draw_generic_window(
             1,
         )
 
-    # 7. Content origin, preserving native pixel size.
-    content_x = (
-        x + frame
-        + (w - frame * 2 - content_image.width) // 2
-    )
-
-    content_y = (
-        y + header_h + menu_height + CONTENT_PADDING
-    )
-
-    canvas.drawImage(
-        _skia_image(content_image),
-        content_x,
-        content_y,
-    )
+    # 7. Content origin, shared with measurement and annotations.
+    _, (offset_x, offset_y) = window_geometry(
+        (content_image.width(), content_image.height()), menu_items, style=style)
+    content_x, content_y = x + offset_x, y + offset_y
+    canvas.drawImage(content_image, content_x, content_y)
 
     canvas.restore()
 

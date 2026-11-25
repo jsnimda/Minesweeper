@@ -4,10 +4,7 @@ import random
 from .scene import GameSpec
 
 
-THEMES = {'classic': ('default','blue','green','warm'),
-          'windows7': ('blue','green'), 'microsoft': ('default','blue','warm'),
-          'google': ('default','blue','warm')}
-
+from .minesweeper.styles import THEMES
 
 def sample_game(rng, board_seed, *, targeted=False, target_number=None, small=False):
     style = rng.choice(tuple(THEMES))

@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 def _color(value):
@@ -278,7 +276,7 @@ def render_browser(
     width: int = 850,
     height: int = 580,
     page_type: str | None = None,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render a synthetic browser and return no target boxes."""
     if width < 500 or height < 360:
         raise ValueError("Browser dimensions are too small")
@@ -351,4 +349,4 @@ def render_browser(
     else:
         _dashboard_page(canvas, width, height, rng)
 
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

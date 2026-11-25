@@ -5,6 +5,8 @@ Weights are relative; they do not have to sum to 100.
 """
 
 SCOPE = {
+    "scene_mode": {"desktop": 80, "game": 15, "grid": 5},
+    "wallpaper_placement": {"cover": 80, "fit": 15, "repeat": 5},
     # Desktop appearance
     "shell": {
         "taskbar": 60,
@@ -37,7 +39,7 @@ SCOPE = {
     },
 
     # Wallpaper categories
-    "wallpaper_type": {"photograph": 40, "artwork": 25},
+    "wallpaper_type": {"procedural": 20, "artwork": 40, "photographs": 40},
 
     # Screen resolution
     "resolution": {
@@ -73,13 +75,6 @@ SCOPE = {
             ],
         },
     },
-    "display_scale": {
-        1.0: 50,
-        # 1.25: 25,
-        # 1.5: 15,
-        # 2.0: 10,
-    },
-
     # Scene complexity
     "cleanliness": {
         "minimal": 10,
@@ -110,22 +105,6 @@ SCOPE = {
         "media_viewer": 4,
     },
 
-    # Optional desktop elements
-    "desktop_component_probability": {
-        "desktop_icons": 45,
-        "notification": 10,
-        "context_menu": 8,
-        "dialog": 12,
-        "tooltip": 8,
-    },
-    "component_density": {
-        "minimal": 0.20,
-        "clean": 0.50,
-        "normal": 1.00,
-        "busy": 1.30,
-        "chaotic": 1.60,
-    },
-
     # Minesweeper
     "game_count": {
         0: 10,
@@ -134,17 +113,7 @@ SCOPE = {
         3: 1.5,
         4: 1.5,
     },
-    "game_renderer": {
-        "classic": 35,
-        "windows7": 25,
-        # "modern_microsoft": 15,
-        # "google": 15,
-        # "other_web": 10,
-    },
-    "game_host": {
-        "native": 55,
-        # "browser": 45,
-    },
+    "game_renderer": {"classic": 25, "windows7": 25, "microsoft": 25, "google": 25},
     "board_size": {
         "beginner": {
             "weight": 35,
@@ -185,25 +154,4 @@ SCOPE = {
         "lost": 60,
     },
 
-    # Game arrangement and occlusion
-    "game_arrangement": {
-        "foreground": 30,
-        # "browser_embedded": 25,
-        "beside_other_apps": 20,
-        # "partly_covered": 15,
-        # "partly_offscreen": 5,
-        # "other": 5,
-    },
-    "grid_visibility": {
-        "full": 75,
-        "mostly": 15,
-        "partial": 8,
-        "small": 2,
-    },
-    "visibility_range": {
-        "full": (1.0, 1.0),
-        "mostly": (0.80, 0.99),
-        "partial": (0.50, 0.79),
-        "small": (0.10, 0.49),
-    },
 }

@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 def _color(value: str) -> int:
@@ -185,7 +183,7 @@ def render_document_editor(
     *,
     width: int = 820,
     height: int = 650,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render a deterministic synthetic word processor.
 
     Returns an image and an empty Minesweeper annotation dictionary.
@@ -404,4 +402,4 @@ def render_document_editor(
         11, muted,
     )
 
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

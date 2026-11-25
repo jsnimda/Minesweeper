@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 def _color(value: str) -> int:
@@ -274,7 +272,7 @@ def render_code_editor(
     *,
     width: int = 900,
     height: int = 620,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render a synthetic IDE with code and terminal panels."""
     if width < 600 or height < 420:
         raise ValueError("Code editor canvas is too small")
@@ -563,4 +561,4 @@ def render_code_editor(
         11, "#FFFFFF",
     )
 
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

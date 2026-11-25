@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from typing import TypeVar
 
 from .scope import SCOPE
+from synthetic_scenes.minesweeper.styles import THEMES
 
 T = TypeVar("T")
 
@@ -78,9 +79,6 @@ def sample_desktop(rng: random.Random) -> dict:
         sample_accent_color(rng) if custom_accent else None
     )
 
-    wallpaper_type = choose(rng, SCOPE["wallpaper_type"])
-    wallpaper = {"type": wallpaper_type}
-
     # A reproducible, synthetic desktop timestamp.
     clock_day = date(2020, 1, 1) + timedelta(
         days=rng.randrange(365 * 7)
@@ -98,7 +96,6 @@ def sample_desktop(rng: random.Random) -> dict:
         "taskbar_layout": taskbar_layout,
         "color_scheme": color_scheme,
         "accent_color": accent_color,
-        "wallpaper": wallpaper,
         "clock_time": clock_time,
         "clock_date": clock_date,
     }
@@ -106,11 +103,6 @@ def sample_desktop(rng: random.Random) -> dict:
 
 def sample_game(rng: random.Random) -> dict:
     renderer = choose(rng, SCOPE["game_renderer"])
-
-    if renderer in {"google", "other_web"}:
-        host = "browser"
-    else:
-        host = choose(rng, SCOPE["game_host"])
 
     preset = choose(
         rng,
@@ -154,118 +146,46 @@ def sample_game(rng: random.Random) -> dict:
         low, high = SCOPE["progress_range"][progress_category]
         progress = rng.uniform(low, high)
 
-    arrangement_weights = {
-        name: weight
-        for name, weight in SCOPE["game_arrangement"].items()
-        if name != "browser_embedded" or host == "browser"
+    theme = THEMES[renderer][0] if rng.random() < .65 else rng.choice(THEMES[renderer])
+    appearance = {
+        "style": renderer, "theme": theme, "cell_size": rng.randint(20, 40),
+        "font_family": rng.choice(("Arial", "Tahoma", "Verdana")),
+        "font_scale": rng.uniform(.65, .77), "bold": rng.random() < .9,
     }
-    arrangement = choose(rng, arrangement_weights)
-
-    if arrangement in {"partly_covered", "partly_offscreen"}:
-        visibility_weights = {
-            name: weight
-            for name, weight in SCOPE["grid_visibility"].items()
-            if name != "full"
-        }
-        visibility_category = choose(rng, visibility_weights)
-    else:
-        visibility_category = "full"
-
-    low, high = SCOPE["visibility_range"][visibility_category]
-    visible_fraction = (
-        1.0 if visibility_category == "full"
-        else rng.uniform(low, high)
-    )
-
+    if renderer == "google":
+        appearance["boundary_ratio"] = rng.choice((0., .06, .08, .10))
+    if renderer == "windows7":
+        appearance["mine_variant"] = rng.choice(("classic", "flower"))
     return {
-        "renderer": renderer,
-        "host": host,
-        "board": {
-            "rows": rows,
-            "columns": columns,
-            "mine_count": mine_count,
-        },
-        "game": {
-            "status": status,
-            "progress": round(progress, 4),
-            "seed": rng.randrange(2**32),
-            "elapsed_seconds": (
-                0 if status == "new"
-                else rng.randint(1, 999)
-            ),
-        },
-        "arrangement": arrangement,
-        "visibility": {
-            "category": visibility_category,
-            "fraction": round(visible_fraction, 4),
-        },
+        "rows": rows, "columns": columns, "mine_count": mine_count,
+        "status": status, "progress": progress, "seed": rng.getrandbits(64),
+        "elapsed_seconds": 0 if status == "new" else rng.randint(1, 999),
+        "appearance": appearance,
     }
 
 
-def sample_components(
-    rng: random.Random,
-    cleanliness: str,
-) -> list[str]:
-    factor = SCOPE["component_density"][cleanliness]
-    components = []
-
-    for name, probability in SCOPE[
-        "desktop_component_probability"
-    ].items():
-        chance = min(1.0, probability / 100.0 * factor)
-        if rng.random() < chance:
-            components.append(name)
-
-    return components
-
-
-def sample_scene(seed: int = 42) -> dict:
-    """Generate one reproducible logical scene request."""
+def sample_scene(seed: int | str = 42) -> dict:
+    """Sample a descriptive request with independent component seeds."""
     rng = random.Random(seed)
-
-    desktop = sample_desktop(rng)
-
-    _, (width, height) = choose_group(
-        rng, SCOPE["resolution"]
-    )
-    scale = choose(rng, SCOPE["display_scale"])
-
-    cleanliness = choose(rng, SCOPE["cleanliness"])
-    game_count = choose(rng, SCOPE["game_count"])
-
-    windows = []
-
-    for _ in range(game_count):
-        windows.append({
-            "id": f"window_{len(windows)}",
-            "type": "minesweeper",
-            "content": sample_game(rng),
-        })
-
-    extra_count = choose(
-        rng, SCOPE["extra_window_count"][cleanliness]
-    )
-
-    for _ in range(extra_count):
-        windows.append({
-            "id": f"window_{len(windows)}",
-            "type": choose(rng, SCOPE["application"]),
-        })
-
-    components = sample_components(rng, cleanliness)
-
-    return {
-        "_meta": {"seed": seed},
-        "screen": {
-            "width": width,
-            "height": height,
-            "scale": scale,
-        },
-        "desktop": desktop,
-        "cleanliness": cleanliness,
-        "components": components,
-        "windows": windows,
-    }
+    mode = choose(rng, SCOPE["scene_mode"])
+    game_count = choose(rng, SCOPE["game_count"]) if mode == "desktop" else 1
+    windows = [{"type": "minesweeper", "content": sample_game(rng)}
+               for _ in range(game_count)]
+    result = {"mode": mode, "seed": seed, "layout_seed": rng.getrandbits(64), "windows": windows}
+    if mode == "desktop":
+        _, (width, height) = choose_group(rng, SCOPE["resolution"])
+        desktop = sample_desktop(rng)
+        cleanliness = choose(rng, SCOPE["cleanliness"])
+        extra_count = choose(rng, SCOPE["extra_window_count"][cleanliness])
+        windows.extend({"type": choose(rng, SCOPE["application"]), "seed": rng.getrandbits(64)}
+                       for _ in range(extra_count))
+        category = choose(rng, SCOPE["wallpaper_type"])
+        wallpaper = {"category": category, "seed": rng.getrandbits(64)}
+        if category != "procedural":
+            wallpaper["placement"] = choose(rng, SCOPE["wallpaper_placement"])
+        result.update(screen={"width": width, "height": height}, desktop=desktop,
+                      wallpaper=wallpaper, cleanliness=cleanliness)
+    return result
 
 
 def sample_scenes(

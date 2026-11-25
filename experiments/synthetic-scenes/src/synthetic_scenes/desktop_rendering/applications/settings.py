@@ -4,9 +4,7 @@
 import random
 
 import skia
-from PIL import Image
 
-from ..desktop import surface_to_pillow
 
 
 THEMES = {
@@ -488,10 +486,10 @@ def render_settings(
     height: int = 570,
     page: str | None = None,
     theme: str | None = None,
-) -> tuple[Image.Image, dict]:
+) -> tuple[skia.Image, dict]:
     """Render deterministic desktop settings content.
 
-    Returns a Pillow image and no Minesweeper target boxes.
+    Returns a Skia image and no Minesweeper target boxes.
     """
     if width < 620 or height < 430:
         raise ValueError("Settings canvas is too small")
@@ -643,4 +641,4 @@ def render_settings(
 
     canvas.restore()
 
-    return surface_to_pillow(surface), {}
+    return surface.makeImageSnapshot(), {}

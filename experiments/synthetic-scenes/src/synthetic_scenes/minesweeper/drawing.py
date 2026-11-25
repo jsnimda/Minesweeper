@@ -3,7 +3,6 @@
 import math
 
 import skia
-from PIL import Image
 
 
 def color(value: str):
@@ -113,10 +112,3 @@ def mine(canvas, x, y, s, fill='#202020'):
 
     circle(canvas, cx, cy, s*.24, fill)
     circle(canvas, cx-s*.08, cy-s*.08, s*.05, '#ffffff')
-
-
-def snapshot(surface):
-    # Explicit RGBA avoids native BGRA channel-order assumptions.
-    image = surface.makeImageSnapshot()
-    pixels = image.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType)
-    return Image.fromarray(pixels).convert('RGB')
