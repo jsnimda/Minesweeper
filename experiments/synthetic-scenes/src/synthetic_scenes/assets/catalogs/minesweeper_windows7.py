@@ -1,14 +1,14 @@
 import shutil
-from pathlib import Path
 
 from PIL import Image, ImageFont
+from tqdm import tqdm
 
-from assets.git_download import clone_sparse
+from ..git_download import clone_sparse
+from ..paths import ASSET_DIR
 
 
-ROOT = Path(__file__).resolve().parents[3]
-DESTINATION = ROOT / "data" / "assets" / "minesweeper" / "windows7"
-SOURCES = ROOT / "data" / "assets" / "sources"
+DESTINATION = ASSET_DIR / "minesweeper" / "windows7"
+SOURCES = ASSET_DIR / "sources"
 
 SPRITES = {
     "repo": "https://github.com/jsnimda/minesweeper-win7-assets.git",
@@ -38,18 +38,20 @@ def download() -> None:
 
     DESTINATION.mkdir(parents=True, exist_ok=True)
 
-    for path in SPRITES["paths"]:
-        source = sprite_source / path
-        with Image.open(source) as image:
-            image.verify()
-        shutil.copy2(source, DESTINATION / source.name)
+    with tqdm(total=len(SPRITES["paths"]) + 1, desc="minesweeper_windows7", unit="file") as progress:
+        for path in SPRITES["paths"]:
+            source = sprite_source / path
+            with Image.open(source) as image:
+                image.verify()
+            shutil.copy2(source, DESTINATION / source.name)
+            progress.update()
 
-    font = font_source / FONT["path"]
-    ImageFont.truetype(font, 30)
-
-    font_dir = DESTINATION / "fonts"
-    font_dir.mkdir(exist_ok=True)
-    shutil.copy2(font, font_dir / font.name)
+        font = font_source / FONT["path"]
+        ImageFont.truetype(font, 30)
+        font_dir = DESTINATION / "fonts"
+        font_dir.mkdir(exist_ok=True)
+        shutil.copy2(font, font_dir / font.name)
+        progress.update()
 
     (DESTINATION / ".complete").touch()
     print("minesweeper_windows7: assets prepared")

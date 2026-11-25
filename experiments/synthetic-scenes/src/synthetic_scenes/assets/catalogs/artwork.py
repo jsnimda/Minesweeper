@@ -1,12 +1,13 @@
 import shutil
-from pathlib import Path
 
-from assets.git_download import clone_sparse
+from tqdm import tqdm
+
+from ..git_download import clone_sparse
+from ..paths import ASSET_DIR
 
 
-ROOT = Path(__file__).resolve().parents[3]
-SOURCE = ROOT / "data" / "assets" / "sources" / "gnome-backgrounds"
-DESTINATION = ROOT / "data" / "assets" / "wallpapers" / "artwork"
+SOURCE = ASSET_DIR / "sources" / "gnome-backgrounds"
+DESTINATION = ASSET_DIR / "wallpapers" / "artwork"
 
 ARTWORK = {
     "repo": "https://github.com/GNOME/gnome-backgrounds.git",
@@ -48,7 +49,7 @@ def download() -> None:
 
     DESTINATION.mkdir(parents=True, exist_ok=True)
 
-    for path in ARTWORK["paths"]:
+    for path in tqdm(ARTWORK["paths"], desc="artwork", unit="file"):
         source = SOURCE / path
         shutil.copy2(source, DESTINATION / source.name)
 

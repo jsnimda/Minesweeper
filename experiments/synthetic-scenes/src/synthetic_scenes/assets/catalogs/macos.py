@@ -1,13 +1,14 @@
 import random
 import shutil
-from pathlib import Path
 
-from assets.git_download import clone_sparse
+from tqdm import tqdm
+
+from ..git_download import clone_sparse
+from ..paths import ASSET_DIR
 
 
-ROOT = Path(__file__).resolve().parents[3]
-SOURCE = ROOT / "data" / "assets" / "sources" / "macos-wallpapers"
-DESTINATION = ROOT / "data" / "assets" / "wallpapers" / "os_defaults" / "macos"
+SOURCE = ASSET_DIR / "sources" / "macos-wallpapers"
+DESTINATION = ASSET_DIR / "wallpapers" / "os_defaults" / "macos"
 
 MACOS = {
     "repo": "https://github.com/LAYTAT/macOS-Wallpapers.git",
@@ -46,7 +47,7 @@ def download(count: int = 15, seed: int = 42) -> None:
 
     DESTINATION.mkdir(parents=True, exist_ok=True)
 
-    for path in selected:
+    for path in tqdm(selected, desc="macos", unit="file"):
         source = SOURCE / path
         shutil.copy2(source, DESTINATION / source.name)
 

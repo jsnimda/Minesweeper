@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from synthetic_scenes.minesweeper.game_region import render_game_region
+
 from .minesweeper.board import generate_game
 from .minesweeper import classic, windows7
 
@@ -106,12 +108,7 @@ def render_minesweeper(
     board = spec["board"]
     params = spec["game"]
 
-    renderers = {
-        "classic": classic.render_game_region,
-        "windows7": windows7.render_game_region,
-    }
-
-    if renderer not in renderers:
+    if renderer not in {"classic", "windows7", "windows7_reference"}:
         raise NotImplementedError(
             f"Unsupported Minesweeper renderer: {renderer}"
         )
@@ -126,7 +123,12 @@ def render_minesweeper(
         elapsed_seconds=params["elapsed_seconds"],
     )
 
-    return renderers[renderer](game)
+    if renderer == "windows7":
+        image, metadata = render_game_region(game, style="windows7", cell_size=36)
+        return image, metadata["boxes"]
+    if renderer == "windows7_reference":
+        return windows7.render_game_region(game)
+    return classic.render_game_region(game)
 
 
 def render_application(
@@ -198,7 +200,7 @@ def render_scene(
         # Minesweeper-specific validation.
         content = window["content"]
 
-        if content["renderer"] not in {"classic", "windows7"}:
+        if content["renderer"] not in {"classic", "windows7", "windows7_reference"}:
             raise NotImplementedError(
                 f"Window {index}: unsupported game renderer "
                 f"{content['renderer']!r}"
@@ -273,7 +275,7 @@ def render_scene(
 
         scalable.append(
             spec["type"] == "minesweeper"
-            and spec["content"]["renderer"] == "windows7"
+            and spec["content"]["renderer"] in {"windows7", "windows7_reference"}
         )
 
     # 3. Fit and position windows.

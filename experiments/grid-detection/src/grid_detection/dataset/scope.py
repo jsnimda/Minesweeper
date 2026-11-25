@@ -243,3 +243,12 @@ SCOPE = {
         "small": (0.10, 0.49),
     },
 }
+
+
+# Image weights within Windows wallpaper families. "other/" applies per image.
+WALLPAPER_WEIGHTS = {
+    "xp": {"Bliss.webp": 10, "other/": 3},
+    "windows7": {"img0.jpg": 10, "other/": 3},
+    "windows10": {"img0.jpg": 10, "other/": 3},
+    "windows11": {"img0.jpg": 5, "img19.jpg": 5, "other/": 3},
+}

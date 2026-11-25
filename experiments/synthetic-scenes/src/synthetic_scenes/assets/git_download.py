@@ -13,8 +13,9 @@ def clone_sparse(
 ) -> None:
     if not (destination / ".git").exists():
         destination.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Clone ({repo})...", flush=True)
         run_git(
-            "clone",
+            "clone", "--progress",
             "--depth", "1",
             "--filter=blob:none",
             "--no-checkout",
@@ -27,4 +28,4 @@ def clone_sparse(
         "sparse-checkout", "set", "--no-cone",
         *(f"/{path.lstrip('/')}" for path in paths),
     )
-    run_git("-C", str(destination), "checkout", "HEAD")
+    run_git("-C", str(destination), "checkout", "--progress", "HEAD")

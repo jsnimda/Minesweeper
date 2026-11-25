@@ -2,9 +2,12 @@
 import argparse
 import json
 from collections import Counter
+from contextlib import nullcontext
 from pathlib import Path
 import random
 
+from .assets import prepare_assets
+from .assets.wallpaper import sample_wallpaper
 from .augmentation import augment_scene
 from .exporters import (CELL_CLASSES, YOLO_CLASSES, export_cells, export_geometry,
                         export_yolo, validate_heatmap_sigma, write_json, write_yolo_config)
@@ -16,14 +19,21 @@ def generate_dataset(root, *, train_count=100, val_count=20, seed=42,
                      desktop_size=(1280,720), tasks=('yolo','geometry','cells'),
                      cell_size=32, geometry_size=None, heatmap_sigma=None,
                      targeted_probability=.25, negative_probability=.08,
-                     augment=True, max_attempts=20, wallpaper_paths=()):
+                     augment=True, max_attempts=20, wallpaper_paths=(), progress=None,
+                     scene_sampler=sample_scene, wallpaper_spec=None, wallpaper_weights=None):
     """Stream samples to disk. Counts refer to scenes, not board/cell counts.
 
     Train and validation use separate scene seed namespaces and minefields.
     Existing nonempty destinations are refused.
+    Pass tqdm as progress to display a bar per split, or None to stay silent.
+    Supply a scene sampler with the same keyword arguments as sample_scene
+    to customize scene distributions. A wallpaper_spec selects a shared
+    asset collection, with optional per-family wallpaper weights.
     """
     tasks = tuple(tasks)
     wallpaper_paths = tuple(str(Path(path)) for path in wallpaper_paths)
+    if wallpaper_paths and wallpaper_spec is not None:
+        raise ValueError('Choose wallpaper_paths or wallpaper_spec')
     for path in wallpaper_paths:
         if not Path(path).is_file():
             raise FileNotFoundError(path)
@@ -38,12 +48,16 @@ def generate_dataset(root, *, train_count=100, val_count=20, seed=42,
     root = Path(root)
     if root.exists() and any(root.iterdir()):
         raise FileExistsError(f'Destination is not empty: {root}')
+    if wallpaper_spec is not None and (train_count or val_count):
+        prepare_assets("wallpapers")
     root.mkdir(parents=True,exist_ok=True)
     config = {'seed':seed,'train_count':train_count,'val_count':val_count,'tasks':tasks,
               'desktop_size':desktop_size,'cell_size':cell_size,'geometry_size':geometry_size,
               'heatmap_sigma':heatmap_sigma,'targeted_probability':targeted_probability,
               'negative_probability':negative_probability,'augment':augment,'max_attempts':max_attempts,
               'wallpaper_paths':wallpaper_paths,'yolo_classes':YOLO_CLASSES,'cell_classes':CELL_CLASSES,'status':'incomplete'}
+    if wallpaper_spec is not None:
+        config.update(wallpaper_spec=wallpaper_spec, wallpaper_weights=wallpaper_weights)
     write_json(root/'config.json',config)
     counts = {}
     train_board_ids = set()
@@ -55,17 +69,28 @@ def generate_dataset(root, *, train_count=100, val_count=20, seed=42,
                 (root/'yolo'/sub/split).mkdir(parents=True,exist_ok=True)
         stats = Counter()
         classes = Counter()
-        with (folder/'manifest.jsonl').open('w',encoding='utf-8') as manifest:
+        progress_bar = nullcontext() if progress is None else progress(
+            total=count, desc=split, unit='scene', miniters=1, mininterval=0,
+        )
+        with progress_bar as bar, (folder/'manifest.jsonl').open('w',encoding='utf-8') as manifest:
             for index in range(count):
                 for attempt in range(max_attempts):
                     scene_seed = seed*2*10**9 + split_index*10**9 + index*max_attempts + attempt
                     scene_rng = random.Random(scene_seed ^ 0xD47A)
-                    specs,mode = sample_scene(scene_seed,targeted_probability=targeted_probability,
-                                            negative_probability=negative_probability)
+                    specs,mode = scene_sampler(
+                        scene_seed,
+                        targeted_probability=targeted_probability,
+                        negative_probability=negative_probability,
+                    )
+                    wallpaper_path = None
+                    if mode == 'desktop':
+                        if wallpaper_paths:
+                            wallpaper_path = scene_rng.choice(wallpaper_paths)
+                        elif wallpaper_spec is not None:
+                            wallpaper_path = str(sample_wallpaper(
+                                wallpaper_spec, seed=scene_seed, family_weights=wallpaper_weights,
+                            ))
                     try:
-                        wallpaper_path = (
-                            scene_rng.choice(wallpaper_paths) if wallpaper_paths and mode == 'desktop' else None
-                        )
                         image,meta = render_scene(specs, size=desktop_size, seed=scene_seed, mode=mode,
                                                   wallpaper_path=wallpaper_path)
                         meta['wallpaper_path'] = wallpaper_path
@@ -115,6 +140,13 @@ def generate_dataset(root, *, train_count=100, val_count=20, seed=42,
                     'scene_seed':scene_seed,'board_ids':board_ids})+'\n')
                 if split == 'train':
                     train_board_ids.update(board_ids)
+                if bar is not None:
+                    bar.set_postfix(
+                        boards=stats['boards'],
+                        render_retries=stats['retries'] - stats['minefield_overlap_retries'],
+                        refresh=False,
+                    )
+                    bar.update(1)
         counts[split] = {'counts':dict(stats),'cell_counts':{name:classes[i] for i,name in enumerate(CELL_CLASSES)}}
     if 'yolo' in tasks:
         write_yolo_config(root/'yolo')

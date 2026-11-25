@@ -1,15 +1,10 @@
 """Windows 7 Minesweeper blue-theme grid renderer (no window chrome)."""
 
-from functools import lru_cache
-from pathlib import Path
-
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
-ASSET_DIR = (
-    Path(__file__).resolve().parents[4]
-    / "data" / "assets" / "minesweeper" / "windows7"
-)
+from synthetic_scenes.assets.catalogs.minesweeper_windows7 import DESTINATION as ASSET_DIR
+from synthetic_scenes.assets.windows7 import windows7_font, windows7_sprites
 
 CELL_SIZE = 36
 ATLAS_PITCH = 40
@@ -70,26 +65,8 @@ CONTROL_POSITION = 0.15
 CONTROL_GAP = 12
 CONTROL_BOTTOM_MARGIN = 8
 
-CONTROL_FONT_PATH = ASSET_DIR / "fonts" / "segoeuil.ttf"
 CONTROL_FONT_SIZE = 30
 CONTROL_TEXT_COLOR = (240, 240, 240, 255)
-
-
-@lru_cache(maxsize=1)
-def _assets() -> tuple[Image.Image, Image.Image, Image.Image]:
-    blue = Image.open(ASSET_DIR / "bluesheetx2.png").convert("RGBA")
-    mine = Image.open(ASSET_DIR / "minesweepersheetx2.png").convert("RGBA")
-    other = Image.open(ASSET_DIR / "othersheetx2.png").convert("RGBA")
-
-    if blue.size != (2033, 1205) or mine.size != (93, 53) or other.size != (2047, 2015):
-        raise ValueError("Unexpected Windows 7 atlas dimensions; expected x2 sheets")
-
-    return blue, mine, other
-
-
-@lru_cache(maxsize=1)
-def _control_font() -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(CONTROL_FONT_PATH, CONTROL_FONT_SIZE)
 
 
 def _paste_centered(canvas: Image.Image, sprite: Image.Image, x: int, y: int) -> None:
@@ -182,7 +159,7 @@ def render_board(game: dict) -> tuple[Image.Image, tuple[int, int, int, int]]:
     row_offset = (ATLAS_LOGICAL_ROWS - rows) // 2
     col_offset = (ATLAS_LOGICAL_COLUMNS - columns) // 2
 
-    blue_sheet, mine_sheet, _ = _assets()
+    blue_sheet, mine_sheet, _ = windows7_sprites()
     opened = _opened_cells(game)
     canvas = Image.new("RGBA", (columns * CELL_SIZE, rows * CELL_SIZE))
 
@@ -317,7 +294,7 @@ def _control(
         (box_x + box.width // 2, box_y + box.height // 2 - 1),
         str(int(value)),
         fill=CONTROL_TEXT_COLOR,
-        font=_control_font(),
+        font=windows7_font(CONTROL_FONT_SIZE),
         anchor="mm",
     )
 
@@ -332,7 +309,7 @@ def render_game_region(
     game: dict,
 ) -> tuple[Image.Image, dict[str, tuple[int, int, int, int]]]:
     grid, _ = render_board(game)
-    blue_sheet, mine_sheet, other_sheet = _assets()
+    blue_sheet, mine_sheet, other_sheet = windows7_sprites()
 
     canvas = _frame(other_sheet, grid.width, grid.height)
 

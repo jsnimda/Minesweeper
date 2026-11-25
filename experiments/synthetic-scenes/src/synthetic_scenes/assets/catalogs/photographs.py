@@ -1,14 +1,15 @@
 import json
 import random
 import shutil
-from pathlib import Path
 
-from assets.git_download import clone_sparse
+from tqdm import tqdm
+
+from ..git_download import clone_sparse
+from ..paths import ASSET_DIR
 
 
-ROOT = Path(__file__).resolve().parents[3]
-SOURCE = ROOT / "data" / "assets" / "sources" / "vistarium"
-DESTINATION = ROOT / "data" / "assets" / "wallpapers" / "photographs"
+SOURCE = ASSET_DIR / "sources" / "vistarium"
+DESTINATION = ASSET_DIR / "wallpapers" / "photographs"
 
 REPO_URL = "https://github.com/joshkaspar/vistarium.git"
 
@@ -52,7 +53,7 @@ def download(count: int = 100, seed: int = 42) -> None:
 
     DESTINATION.mkdir(parents=True, exist_ok=True)
 
-    for photo in selected:
+    for photo in tqdm(selected, desc="photographs", unit="file"):
         src = SOURCE / "docs" / photo["thumb"]
         shutil.copy2(src, DESTINATION / src.name)
 

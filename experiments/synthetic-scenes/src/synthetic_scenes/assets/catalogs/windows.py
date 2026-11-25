@@ -1,10 +1,8 @@
-from pathlib import Path
+from ..git_download import clone_sparse
+from ..paths import ASSET_DIR
 
-from assets.git_download import clone_sparse
 
-
-ROOT = Path(__file__).resolve().parents[3]
-DESTINATION = ROOT / "data" / "assets" / "sources" / "windows-ui-assets"
+DESTINATION = ASSET_DIR / "sources" / "windows-ui-assets"
 
 WINDOWS = {
     "repo": "https://github.com/bartekl1/windows-ui-assets.git",

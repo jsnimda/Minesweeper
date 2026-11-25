@@ -1,18 +1,23 @@
 [project]
 name = "grid-detection"
 version = "0.1.0"
-description = "Add your description here"
+description = "Minesweeper grid detection research"
 readme = "README.md"
 authors = [
     { name = "jsnimda", email = "7615255+jsnimda@users.noreply.github.com" }
 ]
-requires-python = ">=3.13"
+requires-python = "==3.13.18"
 dependencies = [
     "matplotlib>=3.11.2",
     "numpy>=2.5.5",
     "pillow>=13.0.0",
     "skia-python>=144.1",
     "tqdm>=4.70.1",
+    "synthetic-scenes",
+    "torch==2.15.0; sys_platform == 'darwin'",
+    "torch==2.15.0+cu134; sys_platform == 'linux'",
+    "torchvision",
+    "ultralytics==8.4.216",
 ]
 
 [project.scripts]
@@ -28,5 +33,27 @@ dev = [
     "pytest>=9.2.0",
 ]
 
-[tool.uv.build-backend]
-module-name = ["grid_detection", "assets"]
+[tool.uv]
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.sources]
+synthetic-scenes = { path = "../synthetic-scenes", editable = true }
+torch = [
+    { index = "pytorch-cu134", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+
+torchvision = [
+    { index = "pytorch-cu134", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu134"
+url = "https://download.pytorch.org/whl/cu134"
+explicit = true
