@@ -1,16 +1,5 @@
-"""Resolve wallpapers using the grid-detection sampling weights."""
+"""Shared wallpaper loading for grid-detection scenes."""
 
-from pathlib import Path
+from synthetic_scenes.assets.wallpapers import WALLPAPER_DIR, resolve_wallpaper
 
-from PIL import Image
-
-from synthetic_scenes.assets.wallpaper import WALLPAPER_DIR, resolve_wallpaper as resolve_shared_wallpaper
-
-from ..dataset.scope import WALLPAPER_WEIGHTS
-
-
-def resolve_wallpaper(
-    scene: dict,
-    root: Path = WALLPAPER_DIR,
-) -> tuple[Image.Image, dict]:
-    return resolve_shared_wallpaper(scene, root=root, family_weights=WALLPAPER_WEIGHTS)
+__all__ = ["WALLPAPER_DIR", "resolve_wallpaper"]

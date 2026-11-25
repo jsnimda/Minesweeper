@@ -3,8 +3,8 @@
 import numpy as np
 from PIL import Image, ImageDraw
 
-from synthetic_scenes.assets.catalogs.minesweeper_windows7 import DESTINATION as ASSET_DIR
-from synthetic_scenes.assets.windows7 import windows7_font, windows7_sprites
+from synthetic_scenes.assets.minesweeper.windows7 import DESTINATION as ASSET_DIR
+from synthetic_scenes.assets.minesweeper.windows7 import windows7_font, windows7_sprites
 
 CELL_SIZE = 36
 ATLAS_PITCH = 40

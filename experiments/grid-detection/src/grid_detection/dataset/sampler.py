@@ -81,14 +81,6 @@ def sample_desktop(rng: random.Random) -> dict:
     wallpaper_type = choose(rng, SCOPE["wallpaper_type"])
     wallpaper = {"type": wallpaper_type}
 
-    if wallpaper_type == "os_defaults":
-        weights = SCOPE["wallpaper_family"].get(
-            (style, shell)
-        )
-        if weights is None:
-            weights = SCOPE["wallpaper_family_fallback"][style]
-        wallpaper["family"] = choose(rng, weights)
-
     # A reproducible, synthetic desktop timestamp.
     clock_day = date(2020, 1, 1) + timedelta(
         days=rng.randrange(365 * 7)

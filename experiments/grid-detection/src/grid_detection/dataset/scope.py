@@ -37,43 +37,7 @@ SCOPE = {
     },
 
     # Wallpaper categories
-    "wallpaper_type": {
-        "os_defaults": 35,
-        "photograph": 40,
-        "artwork": 25,
-    },
-    "wallpaper_family": {
-        ("classic", "taskbar"): {
-            "xp": 80, "windows7": 10, "windows10": 5,
-            "windows11": 3, "macos": 2,
-        },
-        ("aero", "taskbar"): {
-            "xp": 8, "windows7": 75, "windows10": 10,
-            "windows11": 5, "macos": 2,
-        },
-        ("modern", "taskbar"): {
-            "xp": 3, "windows7": 7, "windows10": 25,
-            "windows11": 55, "macos": 10,
-        },
-        ("modern", "dock"): {
-            "xp": 2, "windows7": 3, "windows10": 5,
-            "windows11": 15, "macos": 75,
-        },
-        ("modern", "top_panel"): {
-            "xp": 5, "windows7": 5, "windows10": 20,
-            "windows11": 40, "macos": 30,
-        },
-    },
-    "wallpaper_family_fallback": {
-        "classic": {
-            "xp": 70, "windows7": 15, "windows10": 7,
-            "windows11": 5, "macos": 3,
-        },
-        "aero": {
-            "xp": 8, "windows7": 65, "windows10": 12,
-            "windows11": 10, "macos": 5,
-        },
-    },
+    "wallpaper_type": {"photograph": 40, "artwork": 25},
 
     # Screen resolution
     "resolution": {
@@ -242,13 +206,4 @@ SCOPE = {
         "partial": (0.50, 0.79),
         "small": (0.10, 0.49),
     },
-}
-
-
-# Image weights within Windows wallpaper families. "other/" applies per image.
-WALLPAPER_WEIGHTS = {
-    "xp": {"Bliss.webp": 10, "other/": 3},
-    "windows7": {"img0.jpg": 10, "other/": 3},
-    "windows10": {"img0.jpg": 10, "other/": 3},
-    "windows11": {"img0.jpg": 5, "img19.jpg": 5, "other/": 3},
 }
