@@ -258,6 +258,8 @@ def decode_phase(fields, settings: DecoderSettings = DecoderSettings()):
         reasons.append("image boundary censors termination")
     if len(hypotheses) > 1 and hypotheses[0].score - hypotheses[1].score < settings.ambiguity_margin:
         reasons.append("competing frequency hypotheses")
-    status = "insufficient_evidence" if not hypotheses else ("ambiguous" if reasons else "fitted")
+    # Censoring describes extent, not frequency ambiguity.
+    ambiguous = any(reason != "image boundary censors termination" for reason in reasons)
+    status = "insufficient_evidence" if not hypotheses else ("ambiguous" if ambiguous else "fitted")
     timings['total'] = (perf_counter() - started) * 1000
     return DecodeResult(status, tuple(hypotheses), signals, candidate_map, profile_map, timings, tuple(reasons))

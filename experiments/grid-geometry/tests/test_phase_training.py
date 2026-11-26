@@ -77,3 +77,17 @@ def test_cpu_training_and_resume(tmp_path):
     assert len(resumed) == 2
     checkpoint = torch.load(tmp_path/'run'/'last.pt', map_location='cpu', weights_only=False)
     assert checkpoint['epoch'] == 2 and checkpoint['optimizer']['state']
+
+
+def test_global_summary_separates_complete_partial_and_negative():
+    from grid_geometry.phase.evaluate import summarize_global
+    records = [
+        {'positive': True, 'complete': True, 'global': {'accepted': True, 'correct': True, 'rows_correct': True, 'columns_correct': True}},
+        {'positive': True, 'complete': False, 'global': {'accepted': False, 'correct': None}},
+        {'positive': False, 'complete': None, 'global': {'accepted': False, 'correct': None}},
+    ]
+    summary = summarize_global(records)
+    assert summary['complete_correct_accepted'] == 1
+    assert summary['complete_with_geometry'] == 1
+    assert summary['partial_samples'] == 1
+    assert summary['negative_accepted'] == 0

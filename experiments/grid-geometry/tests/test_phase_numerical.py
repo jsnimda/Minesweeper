@@ -59,8 +59,11 @@ def test_negative_weak_and_cropped():
     assert decode_phase(weak).status == 'insufficient_evidence'
     cropped = fields[:, :, 50:]
     result = decode_phase(cropped)
-    assert result.hypotheses and result.status == 'ambiguous'
-    assert not validate_phase(cropped, result.hypotheses[0], decoder_status=result.status).accepted
+    assert result.hypotheses and result.status == 'fitted'
+    checked = validate_phase(cropped, result.hypotheses[0], decoder_status=result.status)
+    assert checked.local_accepted
+    assert not checked.accepted
+    assert 'left termination unobservable' in checked.reasons
 
 
 def test_local_damage_and_continuation():

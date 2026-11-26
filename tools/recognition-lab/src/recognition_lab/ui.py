@@ -54,15 +54,33 @@ class Canvas(QWidget):
             canvas.drawImage(self.main.image_skia, 0, 0)
             grid = self.main.selected_grid()
             channel = self.main.heatmap.currentIndex()-1
-            if grid is not None and channel >= 0:
-                heat = np.clip(grid.heatmaps[channel]*255, 0, 255).astype(np.uint8)
+            heat = None
+            tile_offset = (0, 0)
+            if grid is not None and 0 <= channel < 3 and not grid.phase_data:
+                heat = grid.heatmaps[channel]
+            elif grid is not None and grid.phase_data:
+                mode = self.main.heatmap.currentText()
+                phase = grid.phase_data
+                if mode == 'Phase occupancy': heat = phase['global'].occupancy
+                elif mode == 'Phase coverage': heat = (phase['global'].weights > 0).astype(float)
+                elif mode in ('Tile horizontal phase', 'Tile vertical phase'):
+                    observations = phase['observations']
+                    o = observations[min(self.main.tile_inspect.value(), len(observations)-1)]
+                    if o.fields is not None:
+                        axis = 0 if mode == 'Tile horizontal phase' else 2
+                        # Map phase angle to a scalar hue-like ramp, masked by occupancy.
+                        heat = (np.arctan2(o.fields[axis+1], o.fields[axis]) / (2*np.pi) + .5) * o.fields[4]
+                        tile_offset = o.box[:2]
+            if heat is not None:
+                valid = np.isfinite(heat)
+                heat = np.nan_to_num(np.clip(heat*255, 0, 255)).astype(np.uint8)
                 rgba = np.zeros((*heat.shape, 4), dtype=np.uint8)
                 rgba[..., 0] = 255
-                rgba[..., 3] = heat // 2
+                rgba[..., 3] = np.where(valid, heat // 2, 0).astype(np.uint8)
                 hm = skia.Image.fromarray(rgba)
                 tr = grid.heatmap_transform
                 left, top = grid.crop.box[:2]
-                rect = skia.Rect.MakeXYWH(left-tr.offset[0]/tr.scale_x, top-tr.offset[1]/tr.scale_y, heat.shape[1]/tr.scale_x, heat.shape[0]/tr.scale_y)
+                rect = skia.Rect.MakeXYWH(left+(tile_offset[0]-tr.offset[0])/tr.scale_x, top+(tile_offset[1]-tr.offset[1])/tr.scale_y, heat.shape[1]/tr.scale_x, heat.shape[0]/tr.scale_y)
                 canvas.save()
                 canvas.clipRect(skia.Rect.MakeLTRB(*grid.crop.box))
                 canvas.drawImageRect(hm, rect)
@@ -156,8 +174,9 @@ class MainWindow(QMainWindow):
         self.canvas = Canvas(self); splitter.addWidget(self.canvas)
         panel = QWidget(); form = QFormLayout(panel)
         self.yolo_path = QLineEdit(str(ROOT/'models/yolo.pt')); self.unet_path = QLineEdit(str(ROOT/'models/grid_unet.pt'))
+        self.phase_path = QLineEdit(str(Settings().config.parents[1] / 'runs/phase-baseline-v1/best.pt'))
         self.config = QLineEdit(str(Settings().config)); self.validation = QLineEdit(str(Settings().validation))
-        for name, field, key in [('YOLO model', self.yolo_path, 'yolo'), ('GridUNet model', self.unet_path, 'unet')]:
+        for name, field, key in [('YOLO model', self.yolo_path, 'yolo'), ('GridUNet model', self.unet_path, 'unet'), ('PhaseGridUNet model', self.phase_path, 'phase')]:
             row = QWidget(); layout = QHBoxLayout(row); layout.setContentsMargins(0,0,0,0); layout.addWidget(field)
             browse = QPushButton('…'); browse.clicked.connect(lambda checked=False, f=field: self.choose_path(f)); layout.addWidget(browse)
             load = QPushButton('Load'); load.clicked.connect(lambda checked=False, k=key: self.model_action(k, True)); layout.addWidget(load)
@@ -168,6 +187,7 @@ class MainWindow(QMainWindow):
         for title, field in [('Training TOML', self.config), ('Validation TOML', self.validation)]:
             row = QWidget(); layout = QHBoxLayout(row); layout.setContentsMargins(0,0,0,0); layout.addWidget(field); b = QPushButton('…'); b.clicked.connect(lambda checked=False, f=field: self.choose_path(f)); layout.addWidget(b); form.addRow(title,row)
         self.device = QComboBox(); self.device.addItems(['auto','cpu','mps','cuda']); form.addRow('Device', self.device)
+        self.geometry_backend = QComboBox(); self.geometry_backend.addItems(['gaussian', 'phase']); form.addRow('Geometry backend', self.geometry_backend)
         self.imgsz = self.spin(1280, 32, 8192); form.addRow('YOLO image size', self.imgsz)
         self.conf = QDoubleSpinBox(); self.conf.setRange(0,1); self.conf.setSingleStep(.05); self.conf.setValue(.25); form.addRow('Confidence', self.conf)
         self.padding = self.spin(20,0,2000); form.addRow('Crop padding (px)', self.padding)
@@ -177,10 +197,11 @@ class MainWindow(QMainWindow):
         self.mode.currentTextChanged.connect(self.update_tile_controls)
         self.update_tile_controls(self.mode.currentText())
         self.decoder = QComboBox(); self.decoder.addItems(['joint','independent']); form.addRow('Decoder', self.decoder)
-        self.heatmap = QComboBox(); self.heatmap.addItems(['None','Centers','Vertical boundaries','Horizontal boundaries']); self.heatmap.currentIndexChanged.connect(self.redraw); form.addRow('Heatmap', self.heatmap)
+        self.heatmap = QComboBox(); self.heatmap.addItems(['None','Centers','Vertical boundaries','Horizontal boundaries', 'Phase occupancy', 'Phase coverage', 'Tile horizontal phase', 'Tile vertical phase']); self.heatmap.currentIndexChanged.connect(self.redraw); form.addRow('Heatmap', self.heatmap)
+        self.tile_inspect = self.spin(0, 0, 99999); self.tile_inspect.valueChanged.connect(self.redraw); form.addRow('Phase tile index (zero-based)', self.tile_inspect)
         self.layer_widgets = {}
-        for key, label in [('detections','Detections'),('crops','Crop boundaries'),('boundaries','Grid boundaries'),('centers','Cell centers')]:
-            check = QCheckBox(label); check.setChecked(True); check.toggled.connect(self.redraw); self.layer_widgets[key] = check; form.addRow(check)
+        for key, label in [('detections','Detections'),('crops','Crop boundaries'),('boundaries','Grid boundaries'),('centers','Cell centers'), ('tiles','Phase tile layout'), ('terminations','Phase observed terminations'), ('cell_support','Phase cell support')]:
+            check = QCheckBox(label); check.setChecked(key not in ('tiles', 'terminations', 'cell_support')); check.toggled.connect(self.redraw); self.layer_widgets[key] = check; form.addRow(check)
         self.overlay_layer_widgets = {}
         for key, label in [('detections','Overlay detections'),('crops','Overlay crop boundaries'),('boundaries','Overlay grid boundaries'),('centers','Overlay cell centers')]:
             check = QCheckBox(label); check.setChecked(True); check.toggled.connect(self.redraw); self.overlay_layer_widgets[key] = check; form.addRow(check)
@@ -265,7 +286,7 @@ class MainWindow(QMainWindow):
                 if panel_visible: self.show()
         QTimer.singleShot(250, finish)
     def settings(self):
-        return Settings(self.device.currentText(), self.imgsz.value(), self.conf.value(), self.padding.value(), self.mode.currentText(), self.tile.value(), self.overlap.value(), self.batch.value(), self.decoder.currentText(), Path(self.config.text()), Path(self.validation.text()))
+        return Settings(self.device.currentText(), self.imgsz.value(), self.conf.value(), self.padding.value(), self.mode.currentText(), self.tile.value(), self.overlap.value(), self.batch.value(), self.decoder.currentText(), Path(self.config.text()), Path(self.validation.text()), self.geometry_backend.currentText())
     def start_worker(self, fn, done, guard_generation=True):
         if self.worker is not None: return
         self.statusBar().showMessage('Processing…'); self.worker = Worker(fn, self.generation)
@@ -289,12 +310,13 @@ class MainWindow(QMainWindow):
         if self.worker is not None: return
         if not load:
             getattr(self.pipeline, 'unload_'+key)(); self.update_loaded(); return
-        path = self.yolo_path.text() if key == 'yolo' else self.unet_path.text(); config = self.config.text()
+        path = {'yolo': self.yolo_path, 'unet': self.unet_path, 'phase': self.phase_path}[key].text(); config = self.config.text()
         def action():
             if key == 'yolo': self.pipeline.load_yolo(path)
+            elif key == 'phase': self.pipeline.load_phase(path)
             else: self.pipeline.load_unet(path, config)
         self.start_worker(action, lambda _: self.update_loaded(), guard_generation=False)
-    def update_loaded(self): self.loaded.setText(f'YOLO: {self.pipeline.yolo_path or "unloaded"}\nGridUNet: {self.pipeline.unet_path or "unloaded"}')
+    def update_loaded(self): self.loaded.setText(f'YOLO: {self.pipeline.yolo_path or "unloaded"}\nGridUNet: {self.pipeline.unet_path or "unloaded"}\nPhaseGridUNet: {self.pipeline.phase_path or "unloaded"}')
     def run(self, mode):
         if self.worker is not None: return
         if self.frame is None: QMessageBox.warning(self,'Recognition','Open or capture an image first'); return
@@ -323,9 +345,12 @@ class MainWindow(QMainWindow):
             text += '\n\n' + '\n'.join(f'{k}: {v:.1f}' for k,v in self.result.timings.items())
             grid = self.selected_grid()
             if grid:
-                text += f'\n\nCrop: {grid.crop.box}; clipped: {grid.crop.clipped}\nDecoder: {grid.decoding.status}\nStrict: {grid.validation.status}\nReasons: {", ".join(grid.validation.reasons) or "none"}\nCompleteness may be uncertain, especially at image boundaries.\n'
+                validation_status = grid.validation.status if grid.validation else 'no hypothesis'
+                validation_reasons = grid.validation.reasons if grid.validation else ('no hypothesis',)
+                text += f'\n\nCrop: {grid.crop.box}; clipped: {grid.crop.clipped}\nDecoder: {grid.decoding.status}\nStrict: {validation_status}\nReasons: {", ".join(validation_reasons) or "none"}\nCompleteness may be uncertain, especially at image boundaries.\n'
                 for i,(xs,ys,score) in enumerate(grid.hypotheses):
-                    text += f'\nCandidate {i+1}: {len(ys)-1} rows × {len(xs)-1} columns; pitch {np.mean(np.diff(xs)):.2f} × {np.mean(np.diff(ys)):.2f}; score {score:.4f}'
+                    label = 'accepted board' if grid.validation and grid.validation.accepted and i == 0 else 'unvalidated candidate'
+                    text += f'\nCandidate {i+1} ({label}): {len(ys)-1} rows × {len(xs)-1} columns; pitch {np.mean(np.diff(xs)):.2f} × {np.mean(np.diff(ys)):.2f}; origin {xs[0]:.2f}, {ys[0]:.2f}; score {score:.4f}'
                 text += '\n' + '\n'.join(f'{k}: {v}' for k,v in grid.diagnostics.items())
                 text += '\n' + '\n'.join(f'{k}: {v:.1f}' for k,v in grid.timings.items())
         self.diagnostics.setPlainText(text)

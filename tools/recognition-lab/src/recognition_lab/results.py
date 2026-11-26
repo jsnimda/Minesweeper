@@ -61,6 +61,14 @@ class GeometryResult:
     hypotheses: list
     timings: dict = field(default_factory=dict)
     diagnostics: dict = field(default_factory=dict)
+    phase_data: object | None = None
+
+    @property
+    def accepted_geometry(self):
+        """Screenshot-coordinate edges only when complete validation passed."""
+        if self.validation is None or not self.validation.accepted or not self.hypotheses:
+            return None
+        return self.hypotheses[0][:2]
 
 
 @dataclass
