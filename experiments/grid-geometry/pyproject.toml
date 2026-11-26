@@ -7,6 +7,7 @@ requires-python = "==3.13.18"
 dependencies = [
     "numpy>=2.5.5",
     "pillow>=13.0.0",
+    "synthetic-scenes",
     "torch==2.15.0",
 ]
 
@@ -17,6 +18,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "ipykernel>=7.4.0",
+    "matplotlib>=3.11.2",
     "pytest>=9.2.0",
 ]
 
@@ -31,6 +33,7 @@ required-environments = [
 ]
 
 [tool.uv.sources]
+synthetic-scenes = { path = "../synthetic-scenes", editable = true }
 torch = [
     { index = "pytorch-cu134", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]

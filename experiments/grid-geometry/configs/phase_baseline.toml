@@ -1,0 +1,17 @@
+# Paths are relative to this config file.
+dataset_root = "../data/phase"
+output_dir = "../runs/phase-baseline"
+batch_size = 8
+workers = 0
+epochs = 30
+optimizer = "adamw"
+learning_rate = 0.001
+weight_decay = 0.0001
+scheduler = "none"
+step_size = 10
+gamma = 0.5
+seed = 42
+device = "auto"
+amp = false
+occupancy_weight = 1.0
+selection_metric = "loss"
