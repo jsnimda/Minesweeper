@@ -20,7 +20,7 @@ def test_sampled_game_appearance_matches_public_schema():
 def test_generator_does_not_retry_invalid_scene(tmp_path, monkeypatch):
     calls = []
 
-    def invalid_scene(seed):
+    def invalid_scene(seed, *, sampling_metadata=None):
         calls.append(seed)
         return {'mode': 'game', 'seed': seed, 'windows': []}
 
@@ -39,7 +39,7 @@ def test_placement_retries_remain_bounded(tmp_path, monkeypatch):
 
     calls = []
 
-    def cannot_place(seed):
+    def cannot_place(seed, *, sampling_metadata=None):
         calls.append(seed)
         raise PlacementError('cannot fit')
 

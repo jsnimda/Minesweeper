@@ -118,6 +118,8 @@ SAMPLING_CONFIG = {
         4: 1.5,
     },
     "game_renderer": {"classic": 25, "windows7": 25, "microsoft": 25, "google": 25},
+    "game_zoom": {1.0: 1},
+    "display_scale": {1.0: 1},
     "board_size": {
         "beginner": {"weight": 25, "size": (9, 9), "mines": 10},
         "intermediate": {"weight": 25, "size": (16, 16), "mines": 40},

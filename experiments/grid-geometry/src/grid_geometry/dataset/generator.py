@@ -79,6 +79,25 @@ def _geometry(board):
     return PhaseGeometry(left - gap / 2, top - gap / 2, pitch, pitch, (left, top, right, bottom))
 
 
+def _fit_standalone_game(game, budget):
+    """Fit native game content by reducing only its sampled base cell size."""
+    from synthetic_scenes.minesweeper.geometry import measure_game_region
+
+    appearance = game['appearance']
+    requested = appearance['cell_size']
+    for cell_size in range(requested, min(12, requested) - 1, -1):
+        try:
+            width, height = measure_game_region(
+                game['rows'], game['columns'], appearance['style'], cell_size, appearance['zoom']
+            )
+        except OverflowError:
+            raise ValueError('standalone source exceeds image budget') from None
+        if max(width, height) <= budget['max_dimension'] and width * height <= budget['max_pixels']:
+            appearance['cell_size'] = cell_size
+            return
+    raise ValueError('standalone source exceeds image budget at minimum cell size')
+
+
 def _pitch_bin(pitch, bins):
     for low, high, _ in bins:
         if low <= pitch <= high:
@@ -169,8 +188,12 @@ def _generate_one(task):
         try:
             game, progress_kind = (None, None) if negative else _game(rng, category, desired_pitch, config['input_size'],
                 coverage_exploration_fraction=config['coverage_exploration_fraction'],
-                coverage_preference_exponent=config['coverage_preference_exponent'])
-            request = _scene(rng, game, category if negative else None, config['desktop_fraction'])
+                coverage_preference_exponent=config['coverage_preference_exponent'], game_zoom=config['game_zoom'])
+            sampled_cell_size = game['appearance']['cell_size'] if game else None
+            request = _scene(rng, game, category if negative else None, config['desktop_fraction'],
+                             display_scale=config['display_scale'])
+            if request['mode'] == 'game' and config['standalone_source_budget'] is not None:
+                _fit_standalone_game(game, config['standalone_source_budget'])
             image, resolved, annotations = render_scene(request, details=('scene',), wallpaper_assets={})
             boards = annotations['boards']
             if negative:
@@ -240,7 +263,7 @@ def _generate_one(task):
             background = render_procedural_wallpaper((width, height), context_rng, context_subtype).convert('RGBA')
         else:
             context_spec = {'mode': 'desktop', 'seed': context_rng.getrandbits(64),
-                'layout_seed': context_rng.getrandbits(64), 'screen': {'width': max(320, width), 'height': max(240, height)},
+                'layout_seed': context_rng.getrandbits(64), 'screen': {'width': max(320, width), 'height': max(240, height), 'scale': 1.0},
                 'desktop': _desktop(context_rng), 'wallpaper': {'category': 'procedural', 'seed': context_rng.getrandbits(64)},
                 'windows': [{'type': context_rng.choice(('browser', 'spreadsheet', 'sudoku', 'other_puzzle')),
                              'seed': context_rng.getrandbits(64)}]}
@@ -294,6 +317,13 @@ def _generate_one(task):
                 'style': board['style'] if board else None, 'appearance': board['style_parameters'] if board else None,
                 'theme': board['theme'] if board else None, 'game_progress_category': progress_kind,
                 'game_specification': game,
+                'display_scale': request['screen']['scale'] if request['mode'] == 'desktop' else 1.0,
+                'sampled_cell_size': sampled_cell_size,
+                'requested_cell_size': board['requested_cell_size'] if board else None,
+                'resolved_cell_size': board['resolved_cell_size'] if board else None,
+                'requested_zoom': board['requested_zoom'] if board else None,
+                'requested_display_scale': board['requested_display_scale'] if board else None,
+                'requested_effective_scale': board['requested_effective_scale'] if board else None,
                 'board_dimensions': [board['rows'], board['columns']] if board else None,
                 'original_geometry': asdict(source_geometry) if source_geometry else None,
                 'geometry': geometry_dict, 'original_ideal_end': original_ideal_end,

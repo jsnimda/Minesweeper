@@ -2,6 +2,7 @@
 """Sample logical synthetic desktop scenes without rendering."""
 
 import colorsys
+import math
 import random
 from collections.abc import Mapping
 from datetime import date, timedelta
@@ -39,6 +40,37 @@ def choose_group(rng: random.Random, groups: dict):
         {name: data["weight"] for name, data in groups.items()},
     )
     return group, rng.choice(groups[group]["options"])
+
+
+def _scale_choices(weights: Mapping) -> dict:
+    """Validate a scale distribution and return its positive-weight choices."""
+    if not isinstance(weights, Mapping) or not weights:
+        raise ValueError("Scale distribution must be a nonempty mapping")
+    choices = {}
+    for scale, weight in weights.items():
+        try:
+            valid_scale = type(scale) in (int, float) and math.isfinite(scale) and scale > 0
+            valid_weight = type(weight) in (int, float) and math.isfinite(weight) and weight >= 0
+        except OverflowError:
+            valid_scale = valid_weight = False
+        if not valid_scale or not valid_weight:
+            raise ValueError("Scale factors and weights must be finite; scales must be positive and weights nonnegative")
+        if weight > 0:
+            choices[scale] = weight
+    try:
+        valid_total = bool(choices) and math.isfinite(sum(choices.values()))
+    except OverflowError:
+        valid_total = False
+    if not valid_total:
+        raise ValueError("Scale distribution must have a finite positive total weight")
+    return choices
+
+
+def sample_scale(rng: random.Random, weights: Mapping) -> float:
+    choices = _scale_choices(weights)
+    if len(choices) == 1:
+        return next(iter(choices))
+    return choose(rng, choices)
 
 
 def sample_accent_color(rng: random.Random) -> str:
@@ -163,6 +195,7 @@ def sample_game(rng: random.Random) -> dict:
         "font_scale": rng.uniform(*SAMPLING_CONFIG["font_scale"]),
         "bold": rng.random() < SAMPLING_CONFIG["bold_probability"],
     }
+    appearance["zoom"] = sample_scale(rng, SAMPLING_CONFIG["game_zoom"])
     if renderer == "google":
         appearance["boundary_ratio"] = rng.choice(SAMPLING_CONFIG["google_boundary_ratios"])
     if renderer == "windows7":
@@ -194,30 +227,39 @@ def _fit_standalone_game(game: dict, mode: str) -> None:
     raise PlacementError("Board cannot fit the standalone image budget at minimum cell size")
 
 
-def sample_scene(seed: int | str = 42) -> dict:
+def sample_scene(seed: int | str = 42, *, sampling_metadata: dict | None = None) -> dict:
     """Sample a scene, resolving cell sizes against its measured rendering area.
 
     Feasibility shrinks cells before retrying a scene; infeasible desktop layouts
     and standalone budgets bias the accepted distributions toward smaller boards.
+    If supplied, sampling_metadata receives pre-fit cell sizes in game order.
     """
     rng = random.Random(seed)
+    # Validate both distributions even when a scene does not use one of them.
+    _scale_choices(SAMPLING_CONFIG["game_zoom"])
+    _scale_choices(SAMPLING_CONFIG["display_scale"])
     mode = choose(rng, SAMPLING_CONFIG["scene_mode"])
     if mode == "desktop":
         _, (width, height) = choose_group(rng, SAMPLING_CONFIG["resolution"])
         desktop = sample_desktop(rng)
+        display_scale = sample_scale(rng, SAMPLING_CONFIG["display_scale"])
         game_count = choose(rng, SAMPLING_CONFIG["game_count"])
     else:
         game_count = 1
 
     windows = [{"type": "minesweeper", "content": sample_game(rng)}
                for _ in range(game_count)]
+    if sampling_metadata is not None:
+        sampling_metadata["sampled_cell_sizes"] = [
+            window["content"]["appearance"]["cell_size"] for window in windows
+        ]
     layout_seed = rng.getrandbits(64)
     result = {"mode": mode, "seed": seed, "layout_seed": layout_seed, "windows": windows}
     if mode == "desktop":
         games = [(index, window["content"]) for index, window in enumerate(windows)]
         # Check feasibility here while leaving the requested cell sizes intact.
         # The renderer repeats this deterministic plan and reports its resolution.
-        plan_game_windows(games, (width, height), desktop, layout_seed)
+        plan_game_windows(games, (width, height), desktop, layout_seed, display_scale)
 
         cleanliness = choose(rng, SAMPLING_CONFIG["cleanliness"])
         extra_count = choose(rng, SAMPLING_CONFIG["extra_window_count"][cleanliness])
@@ -227,7 +269,7 @@ def sample_scene(seed: int | str = 42) -> dict:
         wallpaper = {"category": category, "seed": rng.getrandbits(64)}
         if category != "procedural":
             wallpaper["placement"] = choose(rng, SAMPLING_CONFIG["wallpaper_placement"])
-        result.update(screen={"width": width, "height": height}, desktop=desktop,
+        result.update(screen={"width": width, "height": height, "scale": display_scale}, desktop=desktop,
                       wallpaper=wallpaper, cleanliness=cleanliness)
     else:
         _fit_standalone_game(windows[0]["content"], mode)

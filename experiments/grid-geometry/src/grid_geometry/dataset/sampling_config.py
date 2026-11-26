@@ -1,5 +1,6 @@
 """Defaults and validation for phase dataset generation."""
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 import math
 
 PITCH_BINS = ((6., 11., .10), (12., 19., .25), (20., 31., .35), (32., 47., .20), (48., 64., .10))
@@ -8,6 +9,31 @@ CATEGORIES = {'complete': .35, 'interior': .25, 'side': .20, 'corner': .20}
 STYLES = ('classic', 'windows7', 'microsoft', 'google')
 THEMES = {'classic': ('default', 'blue', 'green', 'warm'), 'windows7': ('blue', 'green'),
           'microsoft': ('default', 'blue', 'warm'), 'google': ('default', 'blue', 'warm')}
+NEUTRAL_SCALE = {1.0: 1}
+
+
+def scale_choices(weights):
+    """Validate a scale distribution and return its positive-weight choices."""
+    if not isinstance(weights, Mapping) or not weights:
+        raise ValueError('scale distribution must be a nonempty mapping')
+    choices = {}
+    for scale, weight in weights.items():
+        try:
+            valid_scale = type(scale) in (int, float) and math.isfinite(scale) and scale > 0
+            valid_weight = type(weight) in (int, float) and math.isfinite(weight) and weight >= 0
+        except OverflowError:
+            valid_scale = valid_weight = False
+        if not valid_scale or not valid_weight:
+            raise ValueError('scale factors and weights must be finite; scales must be positive and weights nonnegative')
+        if weight > 0:
+            choices[scale] = weight
+    try:
+        valid_total = bool(choices) and math.isfinite(sum(choices.values()))
+    except OverflowError:
+        valid_total = False
+    if not valid_total:
+        raise ValueError('scale distribution must have a finite positive total weight')
+    return choices
 
 
 @dataclass(frozen=True)
@@ -33,8 +59,20 @@ class GenerationConfig:
     desktop_fraction: float = .8
     max_attempts: int = 30
     progress: bool = True
+    game_zoom: dict = field(default_factory=lambda: dict(NEUTRAL_SCALE))
+    display_scale: dict = field(default_factory=lambda: dict(NEUTRAL_SCALE))
+    standalone_source_budget: dict | None = None
 
     def __post_init__(self):
+        scale_choices(self.game_zoom)
+        scale_choices(self.display_scale)
+        budget = self.standalone_source_budget
+        if budget is not None and (
+            not isinstance(budget, dict)
+            or set(budget) != {'max_dimension', 'max_pixels'}
+            or any(type(value) is not int or value <= 0 for value in budget.values())
+        ):
+            raise ValueError('standalone source budget must contain positive integer max_dimension and max_pixels')
         if any(type(n) is not int or n < 0 for n in (self.train, self.val, self.test, self.seed)):
             raise ValueError('counts and seed must be nonnegative integers')
         if type(self.workers) is not int or self.workers < 1 or type(self.max_attempts) is not int or self.max_attempts < 1:

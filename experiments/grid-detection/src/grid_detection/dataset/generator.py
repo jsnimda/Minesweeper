@@ -18,7 +18,7 @@ from .sampler import sample_scene
 from .sampling_config import SAMPLING_CONFIG
 from .yolo import YOLO_CLASSES, write_yolo_config, yolo_lines
 
-GENERATOR_REVISION = 4  # Procedural game-region rendering changed.
+GENERATOR_REVISION = 5  # Native scale sampling and compact board metadata.
 _worker_assets = None
 _worker_exclusion_path = None
 _worker_excluded = frozenset()
@@ -53,7 +53,8 @@ def _generate_one(task):
     for attempt in range(task['max_attempts']):
         scene_seed = f'{seed}:{split}:{index}:{attempt}:scene'
         try:
-            request = sample_scene(scene_seed)
+            sampling_metadata = {}
+            request = sample_scene(scene_seed, sampling_metadata=sampling_metadata)
             image, resolved, annotations = render_scene(
                 request, details=('scene',) if task['scene_details'] else (), wallpaper_assets=_worker_assets)
         except PlacementError as exc:
@@ -94,7 +95,24 @@ def _generate_one(task):
 
     record = {'split': split, 'image': f'images/{split}/{name}.png',
               'label': f'labels/{split}/{name}.txt', 'scene_seed': scene_seed,
-              'board_ids': board_ids, 'attempt': attempt}
+              'board_ids': board_ids, 'attempt': attempt,
+              'display_scale': request['screen']['scale'] if request['mode'] == 'desktop' else 1.0,
+              'boards': []}
+    for board, sampled_cell_size in zip(
+        annotations['boards'], sampling_metadata['sampled_cell_sizes'], strict=True
+    ):
+        parameters = board['style_parameters']
+        record['boards'].append({
+            'board_id': board['board_id'],
+            'sampled_cell_size': sampled_cell_size,
+            'requested_cell_size': board['requested_cell_size'],
+            'resolved_cell_size': board['resolved_cell_size'],
+            'requested_zoom': board['requested_zoom'],
+            'requested_display_scale': board['requested_display_scale'],
+            'requested_effective_scale': board['requested_effective_scale'],
+            'cell_width': parameters['cell_width'], 'cell_height': parameters['cell_height'],
+            'pitch_x': parameters['pitch_x'], 'pitch_y': parameters['pitch_y'],
+        })
     if task['augment']:
         record['augmentation'] = annotations['augmentations'][-1]
     if task['scene_details']:

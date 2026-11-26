@@ -1,14 +1,22 @@
 """Sample scenes and games for the phase dataset."""
 import math
 
-from .sampling_config import STYLES, THEMES
+from .sampling_config import NEUTRAL_SCALE, STYLES, THEMES, scale_choices
 
 def _choice(rng, weights):
     keys = list(weights)
     return rng.choices(keys, weights=[weights[k] for k in keys], k=1)[0]
 
 
-def _game(rng, category, pitch, size, *, coverage_exploration_fraction=.12, coverage_preference_exponent=1.5):
+def _sample_scale(rng, weights):
+    choices = scale_choices(weights)
+    if len(choices) == 1:
+        return next(iter(choices))
+    return _choice(rng, choices)
+
+
+def _game(rng, category, pitch, size, *, coverage_exploration_fraction=.12,
+          coverage_preference_exponent=1.5, game_zoom=None):
     # Conditioning board size on category prevents infeasible samples from
     # silently changing the requested pitch. Typical sizes are preferred.
     cw, ch = size[0] / pitch, size[1] / pitch
@@ -51,6 +59,7 @@ def _game(rng, category, pitch, size, *, coverage_exploration_fraction=.12, cove
     appearance = {'style': style, 'theme': rng.choice(THEMES[style]), 'cell_size': cell_size,
                   'font_family': rng.choice(('Arial', 'Tahoma', 'Verdana')), 'font_scale': rng.uniform(.65, .77),
                   'bold': rng.random() < .9}
+    appearance['zoom'] = _sample_scale(rng, NEUTRAL_SCALE if game_zoom is None else game_zoom)
     if style == 'google':
         appearance['boundary_ratio'] = rng.choice((0., .06, .08, .10))
     if style == 'windows7':
@@ -67,7 +76,7 @@ def _desktop(rng):
             'clock_time': '10:08', 'clock_date': '2025/06/12'}
 
 
-def _scene(rng, game, negative_kind=None, desktop_fraction=.8):
+def _scene(rng, game, negative_kind=None, desktop_fraction=.8, *, display_scale=None):
     seed = rng.getrandbits(64)
     if game is not None and (game['rows'] * game['columns'] > 700 or rng.random() >= desktop_fraction):
         return {'mode': 'game', 'seed': seed, 'windows': [{'type': 'minesweeper', 'content': game}]}
@@ -79,8 +88,9 @@ def _scene(rng, game, negative_kind=None, desktop_fraction=.8):
         windows.append({'type': 'minesweeper', 'content': game})
         if rng.random() < .45:
             windows.append({'type': rng.choice(('spreadsheet', 'sudoku', 'browser', 'other_puzzle')), 'seed': rng.getrandbits(64)})
+    scale = _sample_scale(rng, NEUTRAL_SCALE if display_scale is None else display_scale)
     return {'mode': 'desktop', 'seed': seed, 'layout_seed': rng.getrandbits(64),
-            'screen': {'width': 1600, 'height': 1000}, 'desktop': _desktop(rng),
+            'screen': {'width': 1600, 'height': 1000, 'scale': scale}, 'desktop': _desktop(rng),
             'wallpaper': {'category': 'procedural', 'seed': rng.getrandbits(64)}, 'windows': windows}
 
 
