@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 def _color(value: str) -> int:
@@ -312,6 +314,7 @@ def render_presentation(
     *,
     width: int = 900,
     height: int = 620,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render a deterministic slide editor.
 
@@ -327,8 +330,10 @@ def render_presentation(
     slides = presentation["slides"]
     selected = rng.randrange(len(slides))
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
     canvas.clear(_color("#E9EDF2"))
 
     dark = "#293648"

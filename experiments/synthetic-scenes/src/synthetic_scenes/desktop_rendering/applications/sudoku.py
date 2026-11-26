@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 def _paint(color: int, *, stroke: float = 0) -> skia.Paint:
@@ -59,6 +61,7 @@ def render_sudoku(
     *,
     clues: int = 32,
     cell_size: int = 36,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render Sudoku content and empty Minesweeper annotations.
 
@@ -84,8 +87,10 @@ def render_sudoku(
     width = grid_size + 2 * margin
     height = header + grid_size + footer
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
 
     # Application background.
     canvas.clear(skia.ColorWHITE)

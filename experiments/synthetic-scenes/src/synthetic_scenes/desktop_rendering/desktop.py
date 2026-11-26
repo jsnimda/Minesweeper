@@ -57,6 +57,8 @@ def draw_desktop(
     wallpaper: skia.Image,
     size: tuple[int, int],
     desktop: dict,
+    *,
+    scale: float = 1.0,
 ) -> None:
     """Draw the desktop on an existing Skia surface."""
     w, h = size
@@ -75,21 +77,23 @@ def draw_desktop(
     colors = _palette(desktop)
 
     if shell == "taskbar":
-        _draw_taskbar(surface, size, desktop, colors)
+        _draw_taskbar(surface, size, desktop, colors, scale=scale)
     elif shell == "dock":
-        _draw_dock(surface, size, desktop, colors)
+        _draw_dock(surface, size, desktop, colors, scale=scale)
     else:
-        _draw_top_panel(surface, size, desktop, colors)
+        _draw_top_panel(surface, size, desktop, colors, scale=scale)
 
 
 def render_desktop(
     wallpaper: Image.Image,
     size: tuple[int, int],
     desktop: dict,
+    *,
+    scale: float = 1.0,
 ) -> Image.Image:
     """Standalone convenience renderer for notebook previews."""
     surface = skia.Surface(*size)
     if wallpaper.size != size:
         wallpaper = ImageOps.fit(wallpaper, size, method=Image.Resampling.LANCZOS)
-    draw_desktop(surface, pillow_to_image(wallpaper), size, desktop)
+    draw_desktop(surface, pillow_to_image(wallpaper), size, desktop, scale=scale)
     return image_to_pillow(surface.makeImageSnapshot())

@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 THEMES = {
@@ -181,6 +183,7 @@ def render_calculator(
     width: int = 340,
     height: int = 520,
     theme: str | None = None,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render a deterministic calculator application.
 
@@ -204,8 +207,10 @@ def render_calculator(
     colors = THEMES[theme]
     expression, display_value = _calculator_state(rng)
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
     canvas.clear(_color(colors["background"]))
 
     # Calculator heading.

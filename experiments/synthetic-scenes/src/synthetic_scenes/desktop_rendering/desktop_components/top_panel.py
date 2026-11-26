@@ -2,14 +2,22 @@
 
 import skia
 
+from ..scaling import validate_scale
+from .geometry import component_geometry
+
 from .primitives import _color, _edge_panel, _paint, _round_rect, _text
 from .system_icons import draw_wifi, draw_volume, draw_battery
 
 
-def _draw_top_panel(surface, size, desktop, colors):
+def _draw_top_panel(surface, size, desktop, colors, scale=1.0):
+    scale = validate_scale(scale)
     canvas = surface.getCanvas()
+    canvas.save()
+    canvas.scale(scale, scale)
+    geometry = component_geometry(size, desktop, scale)
+    size = (size[0] / scale, size[1] / scale)
     w, _ = size
-    height = 36
+    height = geometry["top_panel"][3] / scale
 
     _edge_panel(
         surface, (0, 0, w, height), desktop, colors
@@ -78,3 +86,5 @@ def _draw_top_panel(surface, size, desktop, colors):
         desktop.get("clock_time", "12:34"),
         w - 60, 24, text_color, 13,
     )
+
+    canvas.restore()

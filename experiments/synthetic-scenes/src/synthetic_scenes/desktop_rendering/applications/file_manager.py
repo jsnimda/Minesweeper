@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 def _color(hex_color: str) -> int:
     value = hex_color.lstrip("#")
@@ -87,6 +89,7 @@ def render_file_manager(
     *,
     width: int = 760,
     height: int = 520,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render a deterministic file-manager window content.
 
@@ -98,8 +101,10 @@ def render_file_manager(
 
     rng = random.Random(seed)
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
     canvas.clear(_color("#FFFFFF"))
 
     dark = "#293444"

@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 
 import skia
 
+from .scaling import pixels, validate_scale
 from .desktop import _palette
 from .desktop_components.primitives import _glass_panel
 
@@ -23,8 +24,8 @@ AERO_FRAME = 6
 CLASSIC_FRAME = 4
 
 
-def title_height(style: str) -> int:
-    return CLASSIC_TITLE_HEIGHT if style == "classic" else TITLE_HEIGHT
+def title_height(style: str, scale: float = 1.0) -> int:
+    return pixels(CLASSIC_TITLE_HEIGHT if style == "classic" else TITLE_HEIGHT, scale)
 
 def _color(hex_color: str, alpha: int = 255) -> int:
     value = hex_color.lstrip("#")
@@ -60,20 +61,24 @@ def _line(canvas, x0, y0, x1, y1, color, width=1.5):
     canvas.drawLine(x0, y0, x1, y1, paint)
 
 
-def window_geometry(content_size, menu_items=(), *, style="modern"):
-    """Return total size and content origin using the same frame geometry."""
+def window_geometry(content_size, menu_items=(), *, style="modern", scale=1.0):
+    """Return physical window size and content origin for physical content."""
+    scale = validate_scale(scale)
     width, height = content_size
     if width <= 0 or height <= 0:
         raise ValueError("Content must have positive dimensions")
-    frame = AERO_FRAME if style == "aero" else CLASSIC_FRAME if style == "classic" else 0
-    menu_height = MENU_HEIGHT if menu_items else 0
-    origin = (frame + CONTENT_PADDING, title_height(style) + menu_height + CONTENT_PADDING)
-    return ((width + 2 * (frame + CONTENT_PADDING),
-             height + title_height(style) + menu_height + 2 * CONTENT_PADDING + frame), origin)
+    logical_frame = AERO_FRAME if style == "aero" else CLASSIC_FRAME if style == "classic" else 0
+    frame = pixels(logical_frame, scale) if logical_frame else 0
+    padding = pixels(CONTENT_PADDING, scale)
+    header = title_height(style, scale)
+    menu_height = pixels(MENU_HEIGHT, scale) if menu_items else 0
+    origin = (frame + padding, header + menu_height + padding)
+    return ((width + 2 * (frame + padding),
+             height + header + menu_height + 2 * padding + frame), origin)
 
 
-def window_size(content_size, menu_items=(), *, style="modern"):
-    return window_geometry(content_size, menu_items, style=style)[0]
+def window_size(content_size, menu_items=(), *, style="modern", scale=1.0):
+    return window_geometry(content_size, menu_items, style=style, scale=scale)[0]
 
 
 def _top_panel_caption_controls(
@@ -516,10 +521,12 @@ def draw_generic_window(
     title: str,
     menu_items: Sequence[str] = (),
     desktop: dict | None = None,
+    *,
+    scale: float = 1.0,
 ) -> dict[str, Box]:
     """Draw one window and return screenshot-local annotations.
 
-    The caller places the window. No scaling is performed.
+    The caller places the window; content remains at its physical size.
     The window itself, menu and title bar are not game_region.
     """
     if desktop is None:
@@ -534,22 +541,28 @@ def draw_generic_window(
                 f"Invalid content box {name!r}"
             )
 
-    x, y = position
-    w, h = window_size(
+    scale = validate_scale(scale)
+    physical_x, physical_y = position
+    x, y = physical_x / scale, physical_y / scale
+    physical_w, physical_h = window_size(
         (content_image.width(), content_image.height()),
         menu_items,
         style=desktop["style"],
+        scale=scale,
     )
+    w, h = physical_w / scale, physical_h / scale
 
     if x < 0 or y < 0:
         raise ValueError("Window position must be nonnegative")
 
     canvas = surface.getCanvas()
+    canvas.save()
+    canvas.scale(scale, scale)
 
     colors = _palette(desktop)
     style = desktop["style"]
     scheme = desktop["color_scheme"]
-    header_h = title_height(style)
+    header_h = title_height(style, scale) / scale
 
     dark = scheme == "dark"
 
@@ -596,7 +609,7 @@ def draw_generic_window(
 
     # 3. Title bar. Aero blurs what was already drawn.
     if style == "aero":
-        frame = 6
+        frame = pixels(AERO_FRAME, scale) / scale
 
         # Full glass shell: title bar + side/bottom frame.
         _glass_panel(
@@ -697,8 +710,8 @@ def draw_generic_window(
 
     # 4. Opaque window body, leaving visible side/bottom borders.
     frame = (
-        AERO_FRAME if style == "aero"
-        else CLASSIC_FRAME if style == "classic"
+        pixels(AERO_FRAME, scale) / scale if style == "aero"
+        else pixels(CLASSIC_FRAME, scale) / scale if style == "classic"
         else 0
     )
 
@@ -744,7 +757,7 @@ def draw_generic_window(
     )
 
     # 6. Optional menu bar.
-    menu_height = MENU_HEIGHT if menu_items else 0
+    menu_height = pixels(MENU_HEIGHT, scale) / scale if menu_items else 0
 
     if menu_items:
         menu_y = y + header_h
@@ -758,7 +771,7 @@ def draw_generic_window(
                 x + frame,
                 menu_y,
                 w - 2 * frame,
-                MENU_HEIGHT,
+                menu_height,
             ),
             _paint(menu_color),
         )
@@ -777,17 +790,20 @@ def draw_generic_window(
 
         _line(
             canvas,
-            x, menu_y + MENU_HEIGHT - 1,
-            x + w, menu_y + MENU_HEIGHT - 1,
+            x, menu_y + menu_height - 1,
+            x + w, menu_y + menu_height - 1,
             colors["subtle"],
             1,
         )
 
     # 7. Content origin, shared with measurement and annotations.
     _, (offset_x, offset_y) = window_geometry(
-        (content_image.width(), content_image.height()), menu_items, style=style)
-    content_x, content_y = x + offset_x, y + offset_y
+        (content_image.width(), content_image.height()), menu_items, style=style, scale=scale)
+    content_x, content_y = physical_x + offset_x, physical_y + offset_y
+    canvas.save()
+    canvas.resetMatrix()
     canvas.drawImage(content_image, content_x, content_y)
+    canvas.restore()
 
     canvas.restore()
 
@@ -838,6 +854,8 @@ def draw_generic_window(
                 stroke=True,
             ),
         )
+
+    canvas.restore()
 
     # 9. Translate content-local boxes exactly once.
     return {

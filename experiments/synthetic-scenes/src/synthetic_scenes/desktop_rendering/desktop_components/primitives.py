@@ -54,6 +54,8 @@ def _glass_panel(
 
     # Apply blur to the captured background, not the
     # window content that will be drawn afterward.
+    canvas.save()
+    canvas.resetMatrix()
     canvas.drawImage(
         backdrop,
         0,
@@ -63,6 +65,8 @@ def _glass_panel(
             ImageFilter=skia.ImageFilters.Blur(blur, blur),
         ),
     )
+
+    canvas.restore()
 
     # Tinted glass surface.
     canvas.drawRRect(

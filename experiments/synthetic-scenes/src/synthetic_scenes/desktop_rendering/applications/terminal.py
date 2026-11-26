@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 THEMES = {
@@ -182,6 +184,7 @@ def render_terminal(
     height: int = 490,
     theme: str | None = None,
     session: str | None = None,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render a deterministic terminal emulator.
 
@@ -210,8 +213,10 @@ def render_terminal(
     colors = THEMES[theme]
     lines = _command_session(rng, session)
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
 
     canvas.clear(_color(colors["background"]))
 

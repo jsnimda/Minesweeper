@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 def _color(value: str) -> int:
@@ -183,6 +185,7 @@ def render_document_editor(
     *,
     width: int = 820,
     height: int = 650,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render a deterministic synthetic word processor.
 
@@ -194,8 +197,10 @@ def render_document_editor(
     rng = random.Random(seed)
     document = rng.choice(DOCUMENTS)
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
 
     dark = "#273447"
     muted = "#7A8798"

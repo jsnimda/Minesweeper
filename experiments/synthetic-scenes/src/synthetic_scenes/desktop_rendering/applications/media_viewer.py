@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 THEMES = {
@@ -242,6 +244,7 @@ def render_media_viewer(
     height: int = 600,
     theme: str | None = None,
     media_type: str | None = None,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render a synthetic photo viewer with a thumbnail filmstrip."""
     if width < 560 or height < 420:
@@ -267,8 +270,10 @@ def render_media_viewer(
 
     colors = THEMES[theme]
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
     canvas.clear(_color(colors["background"]))
 
     toolbar_h = 54

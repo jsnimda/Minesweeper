@@ -5,6 +5,9 @@ import math
 
 import skia
 
+from ..scaling import validate_scale
+from .geometry import component_geometry
+
 from .flags import draw_waving_flag
 from .icons import draw_app_icon
 from .primitives import _color, _paint, _round_rect, _edge_panel, _text
@@ -183,14 +186,20 @@ def _draw_system_tray(canvas, w, y, height, desktop, colors):
         )
 
 
-def _draw_taskbar(surface, size, desktop, colors):
+def _draw_taskbar(surface, size, desktop, colors, scale=1.0):
+    scale = validate_scale(scale)
     canvas = surface.getCanvas()
+    canvas.save()
+    canvas.scale(scale, scale)
+    geometry = component_geometry(size, desktop, scale)
+    size = (size[0] / scale, size[1] / scale)
     w, h = size
 
     style = desktop["style"]
     classic = style == "classic"
 
-    height = 36 if classic else 48
+    box = geometry["taskbar"]
+    height = (box[3] - box[1]) / scale
     y = h - height
 
     _edge_panel(
@@ -670,3 +679,5 @@ def _draw_taskbar(surface, size, desktop, colors):
 
     # Style-specific system tray.
     _draw_system_tray(canvas, w, y, height, desktop, colors)
+
+    canvas.restore()

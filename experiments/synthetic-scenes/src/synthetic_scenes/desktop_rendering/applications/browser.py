@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 def _color(value):
@@ -276,6 +278,7 @@ def render_browser(
     width: int = 850,
     height: int = 580,
     page_type: str | None = None,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render a synthetic browser and return no target boxes."""
     if width < 500 or height < 360:
@@ -293,8 +296,10 @@ def render_browser(
     if page_type not in {"search", "article", "dashboard"}:
         raise ValueError(f"Unknown page type: {page_type}")
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
     canvas.clear(_color("#FFFFFF"))
 
     # Browser tab strip.

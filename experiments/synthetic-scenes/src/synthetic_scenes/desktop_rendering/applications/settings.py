@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 THEMES = {
@@ -486,6 +488,7 @@ def render_settings(
     height: int = 570,
     page: str | None = None,
     theme: str | None = None,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render deterministic desktop settings content.
 
@@ -514,8 +517,10 @@ def render_settings(
 
     colors = THEMES[theme]
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
     canvas.clear(_color(colors["background"]))
 
     sidebar_w = 231

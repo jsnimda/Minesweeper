@@ -2,6 +2,9 @@
 
 import skia
 
+from ..scaling import validate_scale
+from .geometry import component_geometry
+
 from .icons import draw_app_icon
 from .primitives import (
     _color,
@@ -13,14 +16,19 @@ from .primitives import (
 from .system_icons import draw_wifi, draw_battery
 
 
-def _draw_dock(surface, size, desktop, colors):
+def _draw_dock(surface, size, desktop, colors, scale=1.0):
+    scale = validate_scale(scale)
     canvas = surface.getCanvas()
+    canvas.save()
+    canvas.scale(scale, scale)
+    geometry = component_geometry(size, desktop, scale)
+    size = (size[0] / scale, size[1] / scale)
     w, h = size
 
     # Thin, edge-attached menu bar instead of a rounded capsule.
     _glass_panel(
         surface,
-        (0, 0, w, 32),
+        (0, 0, w, geometry["status_bar"][3] / scale),
         radius=0,
         blur=9,
         tint=colors["surface"],
@@ -103,11 +111,10 @@ def _draw_dock(surface, size, desktop, colors):
     gap = 12
     padding = 16
 
-    dock_width = count * icon_size + (count - 1) * gap + padding * 2
-    dock_height = icon_size + padding * 2
-
-    x0 = (w - dock_width) // 2
-    y0 = h - dock_height - 16
+    left, top, right, bottom = geometry["dock"]
+    dock_width = (right - left) / scale
+    dock_height = (bottom - top) / scale
+    x0, y0 = left / scale, top / scale
 
     _glass_panel(
         surface,
@@ -140,3 +147,5 @@ def _draw_dock(surface, size, desktop, colors):
                 2.5,
                 _paint(colors["accent"]),
             )
+
+    canvas.restore()

@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 def _color(value: str) -> int:
@@ -272,6 +274,7 @@ def render_code_editor(
     *,
     width: int = 900,
     height: int = 620,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render a synthetic IDE with code and terminal panels."""
     if width < 600 or height < 420:
@@ -280,8 +283,10 @@ def render_code_editor(
     rng = random.Random(seed)
     sample = rng.choice(CODE_SAMPLES)
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
     canvas.clear(_color("#1E1E1E"))
 
     bg = "#1E1E1E"

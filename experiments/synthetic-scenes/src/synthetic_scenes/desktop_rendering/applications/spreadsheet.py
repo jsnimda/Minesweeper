@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 def _color(value: str) -> int:
@@ -52,6 +54,7 @@ def render_spreadsheet(
     columns: int = 8,
     cell_width: int = 92,
     cell_height: int = 27,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render a deterministic spreadsheet with no target boxes."""
     if not 4 <= rows <= 100:
@@ -75,8 +78,10 @@ def render_spreadsheet(
     width = grid_left + columns * cell_width
     height = grid_top + rows * cell_height + tabbar_h
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
     canvas.clear(_color("#FFFFFF"))
 
     # Colors

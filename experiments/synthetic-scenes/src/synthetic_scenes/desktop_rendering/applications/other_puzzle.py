@@ -5,6 +5,8 @@ import random
 
 import skia
 
+from ..scaling import pixels, validate_scale
+
 
 
 TILE_COLORS = {
@@ -284,6 +286,7 @@ def render_other_puzzle(
     width: int = 520,
     height: int = 610,
     puzzle_type: str | None = None,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, dict]:
     """Render a deterministic non-Minesweeper grid puzzle.
 
@@ -307,8 +310,10 @@ def render_other_puzzle(
             f"Unknown puzzle type: {puzzle_type}"
         )
 
-    surface = skia.Surface(width, height)
+    scale = validate_scale(scale)
+    surface = skia.Surface(pixels(width, scale), pixels(height, scale))
     canvas = surface.getCanvas()
+    canvas.scale(scale, scale)
 
     is_2048 = puzzle_type == "2048"
     background = "#FAF8EF" if is_2048 else "#F5F7FB"
