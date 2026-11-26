@@ -8,7 +8,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from grid_geometry.phase.dataset import PhaseDataset
+from grid_geometry.dataset.loader import PhaseDataset
 from grid_geometry.phase.evaluate import geometry_record, summarize
 from grid_geometry.phase.metrics import TargetMetrics
 from grid_geometry.phase.train import Config, TrainingDataset, run_epoch, train

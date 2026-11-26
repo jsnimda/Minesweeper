@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from .dataset import PhaseDataset
+from ..dataset.loader import PhaseDataset
 from .loss import phase_loss
 from .metrics import TargetMetrics
 from .model import MODEL_ID, REPRESENTATION_ID, PhaseGridUNet, load_phase_weights

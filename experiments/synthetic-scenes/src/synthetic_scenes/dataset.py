@@ -116,7 +116,7 @@ def generate_dataset(root, *, train_count=100, val_count=20, seed=42,
                     raise RuntimeError(f'Failed {split} scene {index}: {last_error}') from last_error
                 if augment:
                     image, meta = augment_scene(
-                        image, meta, scale=scene_rng.uniform(.65, 1.25),
+                        image, meta, resize_factor=scene_rng.uniform(.65, 1.25),
                         blur=scene_rng.choice((0., 0., .25, .5)),
                         jpeg_quality=scene_rng.choice((None, None, 85, 95)),
                     )

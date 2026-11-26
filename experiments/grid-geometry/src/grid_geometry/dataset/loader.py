@@ -21,7 +21,7 @@ class PhaseSample:
 
 
 class PhaseDataset(Dataset):
-    """Read a split written by phase.generate_dataset; indexing is batchable."""
+    """Read a split written by dataset.generator; indexing is batchable."""
 
     def __init__(self, root, split, *, transition_ratio=None, require_nonempty=False):
         if split not in ('train', 'val', 'test'):

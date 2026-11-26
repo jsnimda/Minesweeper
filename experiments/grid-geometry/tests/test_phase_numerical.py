@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from grid_geometry.phase.decoder import AxisExtent, DecoderSettings, FrequencyCandidate, GridHypothesis, decode_phase
-from grid_geometry.phase.targets import PhaseGeometry, phase_targets
+from grid_geometry.dataset.targets import PhaseGeometry, phase_targets
 from grid_geometry.phase.validation import validate_phase
 
 

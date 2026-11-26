@@ -11,7 +11,7 @@ from synthetic_scenes.minesweeper.geometry import measure_game_region, measure_g
 from synthetic_scenes.minesweeper.styles import THEMES
 from synthetic_scenes.render import PlacementError, plan_game_windows
 
-from .scope import SCOPE
+from .sampling_config import SAMPLING_CONFIG
 
 T = TypeVar("T")
 
@@ -44,8 +44,8 @@ def choose_group(rng: random.Random, groups: dict):
 def sample_accent_color(rng: random.Random) -> str:
     """Generate a restrained, moderately saturated accent."""
     hue = rng.random()
-    saturation = rng.uniform(*SCOPE["accent_saturation"])
-    lightness = rng.uniform(*SCOPE["accent_lightness"])
+    saturation = rng.uniform(*SAMPLING_CONFIG["accent_saturation"])
+    lightness = rng.uniform(*SAMPLING_CONFIG["accent_lightness"])
 
     rgb = colorsys.hls_to_rgb(hue, lightness, saturation)
     return "#{:02X}{:02X}{:02X}".format(
@@ -54,29 +54,29 @@ def sample_accent_color(rng: random.Random) -> str:
 
 
 def sample_desktop(rng: random.Random) -> dict:
-    shell = choose(rng, SCOPE["shell"])
+    shell = choose(rng, SAMPLING_CONFIG["shell"])
 
-    allowed = SCOPE["shell_styles"][shell]
+    allowed = SAMPLING_CONFIG["shell_styles"][shell]
     style = choose(
         rng,
         {
             name: weight
-            for name, weight in SCOPE["style"].items()
+            for name, weight in SAMPLING_CONFIG["style"].items()
             if name in allowed
         },
     )
     taskbar_layout = (
-        choose(rng, SCOPE["taskbar_layout"])
+        choose(rng, SAMPLING_CONFIG["taskbar_layout"])
         if shell == "taskbar" and style == "modern"
         else None
     )
 
     color_scheme = choose(
-        rng, SCOPE["color_scheme"][style]
+        rng, SAMPLING_CONFIG["color_scheme"][style]
     )
 
     custom_accent = choose(
-        rng, SCOPE["custom_accent"][style]
+        rng, SAMPLING_CONFIG["custom_accent"][style]
     )
     accent_color = (
         sample_accent_color(rng) if custom_accent else None
@@ -105,23 +105,23 @@ def sample_desktop(rng: random.Random) -> dict:
 
 
 def sample_game(rng: random.Random) -> dict:
-    renderer = choose(rng, SCOPE["game_renderer"])
+    renderer = choose(rng, SAMPLING_CONFIG["game_renderer"])
 
     preset = choose(
         rng,
         {
             name: config["weight"]
-            for name, config in SCOPE["board_size"].items()
+            for name, config in SAMPLING_CONFIG["board_size"].items()
         },
     )
 
-    config = SCOPE["board_size"][preset]
+    config = SAMPLING_CONFIG["board_size"][preset]
 
     if "rows" in config:
         rows = rng.randint(*config["rows"])
         columns = rng.randint(*config["columns"])
 
-        density = rng.uniform(*SCOPE["custom_mine_density"])
+        density = rng.uniform(*SAMPLING_CONFIG["custom_mine_density"])
         mine_count = round(rows * columns * density)
     else:
         rows, columns = config["size"]
@@ -132,45 +132,45 @@ def sample_game(rng: random.Random) -> dict:
     ))
 
     progress_category = choose(
-        rng, SCOPE["game_progress"]
+        rng, SAMPLING_CONFIG["game_progress"]
     )
 
     if progress_category == "hidden":
         status = "new"
         progress = 0.0
     elif progress_category == "finished":
-        status = choose(rng, SCOPE["finished_status"])
+        status = choose(rng, SAMPLING_CONFIG["finished_status"])
         progress = (
             1.0 if status == "won"
-            else rng.uniform(*SCOPE["lost_progress_range"])
+            else rng.uniform(*SAMPLING_CONFIG["lost_progress_range"])
         )
     else:
         status = "active"
-        low, high = SCOPE["progress_range"][progress_category]
+        low, high = SAMPLING_CONFIG["progress_range"][progress_category]
         progress = rng.uniform(low, high)
 
     themes = THEMES[renderer]
-    if len(themes) == 1 or rng.random() < SCOPE["default_theme_probability"]:
+    if len(themes) == 1 or rng.random() < SAMPLING_CONFIG["default_theme_probability"]:
         theme = themes[0]
     else:
         theme = rng.choice(themes[1:])
     category = choose(rng, {name: config["weight"]
-                            for name, config in SCOPE["cell_size"].items()})
+                            for name, config in SAMPLING_CONFIG["cell_size"].items()})
     appearance = {
         "style": renderer, "theme": theme,
-        "cell_size": rng.randint(*SCOPE["cell_size"][category]["range"]),
-        "font_family": rng.choice(SCOPE["font_families"]),
-        "font_scale": rng.uniform(*SCOPE["font_scale"]),
-        "bold": rng.random() < SCOPE["bold_probability"],
+        "cell_size": rng.randint(*SAMPLING_CONFIG["cell_size"][category]["range"]),
+        "font_family": rng.choice(SAMPLING_CONFIG["font_families"]),
+        "font_scale": rng.uniform(*SAMPLING_CONFIG["font_scale"]),
+        "bold": rng.random() < SAMPLING_CONFIG["bold_probability"],
     }
     if renderer == "google":
-        appearance["boundary_ratio"] = rng.choice(SCOPE["google_boundary_ratios"])
+        appearance["boundary_ratio"] = rng.choice(SAMPLING_CONFIG["google_boundary_ratios"])
     if renderer == "windows7":
-        appearance["mine_variant"] = rng.choice(SCOPE["windows7_mine_variants"])
+        appearance["mine_variant"] = rng.choice(SAMPLING_CONFIG["windows7_mine_variants"])
     return {
         "rows": rows, "columns": columns, "mine_count": mine_count,
         "status": status, "progress": progress, "seed": rng.getrandbits(64),
-        "elapsed_seconds": 0 if status == "new" else rng.randint(*SCOPE["elapsed_seconds"]),
+        "elapsed_seconds": 0 if status == "new" else rng.randint(*SAMPLING_CONFIG["elapsed_seconds"]),
         "appearance": appearance,
     }
 
@@ -179,8 +179,8 @@ def _fit_standalone_game(game: dict, mode: str) -> None:
     """Shrink cell size, keeping the sampled board, to meet the image budget."""
     appearance = game["appearance"]
     requested = appearance["cell_size"]
-    minimum = SCOPE["cell_size"]["small"]["range"][0]
-    budget = SCOPE["standalone_image_budget"]
+    minimum = SAMPLING_CONFIG["cell_size"]["small"]["range"][0]
+    budget = SAMPLING_CONFIG["standalone_image_budget"]
     measure = measure_grid if mode == "grid" else measure_game_region
     for cell_size in range(requested, minimum - 1, -1):
         width, height = measure(game["rows"], game["columns"], appearance["style"], cell_size)
@@ -198,11 +198,11 @@ def sample_scene(seed: int | str = 42) -> dict:
     and standalone budgets bias the accepted distributions toward smaller boards.
     """
     rng = random.Random(seed)
-    mode = choose(rng, SCOPE["scene_mode"])
+    mode = choose(rng, SAMPLING_CONFIG["scene_mode"])
     if mode == "desktop":
-        _, (width, height) = choose_group(rng, SCOPE["resolution"])
+        _, (width, height) = choose_group(rng, SAMPLING_CONFIG["resolution"])
         desktop = sample_desktop(rng)
-        game_count = choose(rng, SCOPE["game_count"])
+        game_count = choose(rng, SAMPLING_CONFIG["game_count"])
     else:
         game_count = 1
 
@@ -212,18 +212,18 @@ def sample_scene(seed: int | str = 42) -> dict:
     result = {"mode": mode, "seed": seed, "layout_seed": layout_seed, "windows": windows}
     if mode == "desktop":
         games = [(index, window["content"]) for index, window in enumerate(windows)]
-        plan = plan_game_windows(games, (width, height), desktop, layout_seed)
-        for index, game in games:
-            game["appearance"]["cell_size"] = plan[index]["cell_size"]
+        # Check feasibility here while leaving the requested cell sizes intact.
+        # The renderer repeats this deterministic plan and reports its resolution.
+        plan_game_windows(games, (width, height), desktop, layout_seed)
 
-        cleanliness = choose(rng, SCOPE["cleanliness"])
-        extra_count = choose(rng, SCOPE["extra_window_count"][cleanliness])
-        windows.extend({"type": choose(rng, SCOPE["application"]), "seed": rng.getrandbits(64)}
+        cleanliness = choose(rng, SAMPLING_CONFIG["cleanliness"])
+        extra_count = choose(rng, SAMPLING_CONFIG["extra_window_count"][cleanliness])
+        windows.extend({"type": choose(rng, SAMPLING_CONFIG["application"]), "seed": rng.getrandbits(64)}
                        for _ in range(extra_count))
-        category = choose(rng, SCOPE["wallpaper_type"])
+        category = choose(rng, SAMPLING_CONFIG["wallpaper_type"])
         wallpaper = {"category": category, "seed": rng.getrandbits(64)}
         if category != "procedural":
-            wallpaper["placement"] = choose(rng, SCOPE["wallpaper_placement"])
+            wallpaper["placement"] = choose(rng, SAMPLING_CONFIG["wallpaper_placement"])
         result.update(screen={"width": width, "height": height}, desktop=desktop,
                       wallpaper=wallpaper, cleanliness=cleanliness)
     else:

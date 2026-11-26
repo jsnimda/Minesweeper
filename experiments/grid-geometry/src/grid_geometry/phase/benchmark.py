@@ -9,7 +9,7 @@ from time import perf_counter
 import numpy as np
 
 from .decoder import DecoderSettings, decode_phase
-from .targets import PhaseGeometry, phase_targets
+from ..dataset.targets import PhaseGeometry, phase_targets
 from .validation import validate_phase
 
 

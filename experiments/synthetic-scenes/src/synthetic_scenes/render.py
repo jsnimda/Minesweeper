@@ -3,6 +3,7 @@
 The old :mod:`synthetic_scenes.scene` API remains available for existing users.
 Coordinates in returned annotations are half-open image-space xyxy boxes.
 """
+from collections.abc import Collection
 from copy import deepcopy
 from hashlib import sha256
 import importlib
@@ -23,6 +24,7 @@ from .minesweeper.board import generate_game, get_visible_cells
 from .minesweeper.geometry import measure_game_region
 from .minesweeper.renderer import render_board, render_game_region
 from .wallpaper import render_procedural_wallpaper, sample_procedural_subtype
+from .schema import SceneAnnotations, SceneSpec, ResolvedScene
 
 APPLICATIONS = {
     'browser', 'file_manager', 'spreadsheet', 'document_editor', 'presentation',
@@ -88,7 +90,7 @@ def plan_game_windows(games, size, desktop, seed):
             if requested < 8:
                 raise ValueError('cell_size must be at least 8')
             cell = round(requested + (min(12, requested)-requested)*attempt/59)
-            content_size = measure_game_region(spec['rows'], spec['columns'], spec['appearance']['style'], cell)
+            content_size = measure_game_region(spec['rows'], spec['columns'], spec['appearance'].get('style', 'classic'), cell)
             w, h = window_size(content_size, style=desktop['style'])
             items.append((index, w, h, cell))
         placed = []
@@ -110,7 +112,7 @@ def plan_game_windows(games, size, desktop, seed):
     raise PlacementError('Could not fit Minesweeper windows in the work area')
 
 
-def render_scene(specification, *, scene_details=False, cell_details=False, mine_details=False, wallpaper_assets=None):
+def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> tuple[Image.Image, ResolvedScene, SceneAnnotations]:
     """Return ``image, resolved_scene, annotations`` for a scene dictionary.
 
     Required keys are mode, seed and windows. Desktop scenes also require screen
@@ -118,7 +120,26 @@ def render_scene(specification, *, scene_details=False, cell_details=False, mine
     window has type='minesweeper' and a content dictionary containing rows,
     columns, mine_count, status, progress, seed and appearance. Other windows
     have a supported application type and an independent seed.
+
+    `details` independently enables requested scene layout, cell metadata,
+    and mine positions. Invalid requests raise Pydantic ValidationError; a
+    valid desktop that cannot be packed raises PlacementError. The requested
+    scene is copied into the resolved result only when 'scene' is selected.
     """
+    if isinstance(details, (str, bytes)) or not isinstance(details, Collection):
+        raise ValueError('details must be a collection of detail names')
+    if any(not isinstance(name, str) for name in details):
+        raise ValueError('detail names must be strings')
+    details = frozenset(details)
+    unknown = details - {'scene', 'cell', 'mine'}
+    if unknown:
+        raise ValueError(f'Unsupported details: {sorted(unknown)}')
+    scene_details = 'scene' in details
+    cell_details = 'cell' in details
+    mine_details = 'mine' in details
+    # Validate without serializing: omitted keys and explicit None retain their
+    # original rendering meaning, and the caller's dictionary is not modified.
+    SceneSpec.model_validate(specification, context={'wallpaper_assets': wallpaper_assets})
     mode = specification['mode']
     windows = specification['windows']
     if mode not in ('desktop', 'game', 'grid'):

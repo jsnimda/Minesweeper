@@ -6,7 +6,7 @@ imports are lazy; loading exported samples does not depend on synthetic-scenes.
 from collections import Counter, deque
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 import json
 import math
 import multiprocessing
@@ -16,146 +16,13 @@ import tempfile
 from time import perf_counter
 
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image
 
 from .targets import PhaseGeometry
 
 
-PITCH_BINS = ((6., 11., .10), (12., 19., .25), (20., 31., .35), (32., 47., .20), (48., 64., .10))
-CONTEXT_WEIGHTS = {'procedural': 70, 'desktop': 30}
-CATEGORIES = {'complete': .35, 'interior': .25, 'side': .20, 'corner': .20}
-STYLES = ('classic', 'windows7', 'microsoft', 'google')
-THEMES = {'classic': ('default', 'blue', 'green', 'warm'), 'windows7': ('blue', 'green'),
-          'microsoft': ('default', 'blue', 'warm'), 'google': ('default', 'blue', 'warm')}
-
-
-@dataclass(frozen=True)
-class GenerationConfig:
-    train: int = 40
-    val: int = 12
-    test: int = 12
-    seed: int = 42
-    workers: int = 1
-    png_compression: int = 1
-    input_size: tuple[int, int] = (384, 384)
-    pitch_bins: tuple = PITCH_BINS
-    categories: dict = field(default_factory=lambda: dict(CATEGORIES))
-    negative_fraction: float = .15
-    anisotropic_fraction: float = .10
-    anisotropic_max: float = .05
-    transition_ratio: float = .25
-    padding_example_fraction: float = .05
-    padding_max_fraction: float = .20
-    context_weights: dict = field(default_factory=lambda: dict(CONTEXT_WEIGHTS))
-    coverage_exploration_fraction: float = .12
-    coverage_preference_exponent: float = 1.5
-    desktop_fraction: float = .8
-    max_attempts: int = 30
-    progress: bool = True
-
-    def __post_init__(self):
-        if any(type(n) is not int or n < 0 for n in (self.train, self.val, self.test, self.seed)):
-            raise ValueError('counts and seed must be nonnegative integers')
-        if type(self.workers) is not int or self.workers < 1 or type(self.max_attempts) is not int or self.max_attempts < 1:
-            raise ValueError('workers and max_attempts must be positive integers')
-        if type(self.png_compression) is not int or not 0 <= self.png_compression <= 9:
-            raise ValueError('png_compression must be in 0..9')
-        if len(self.input_size) != 2 or any(type(v) is not int or v <= 0 or v % 8 for v in self.input_size):
-            raise ValueError('input dimensions must be positive multiples of eight')
-        if not (0 <= self.negative_fraction <= 1 and 0 <= self.anisotropic_fraction <= 1
-                and 0 <= self.anisotropic_max <= .2 and math.isfinite(self.transition_ratio) and self.transition_ratio > 0
-                and 0 <= self.padding_example_fraction <= 1 and 0 < self.padding_max_fraction <= .4
-                and 0 <= self.coverage_exploration_fraction <= 1
-                and 0 <= self.desktop_fraction <= 1 and math.isfinite(self.coverage_preference_exponent)
-                and 0 <= self.coverage_preference_exponent <= 5):
-            raise ValueError('invalid probability, anisotropy or transition ratio')
-        if set(self.context_weights) != set(CONTEXT_WEIGHTS) or any(not math.isfinite(v) or v < 0 for v in self.context_weights.values()) or sum(self.context_weights.values()) <= 0:
-            raise ValueError('invalid context weights')
-        if set(self.categories) != set(CATEGORIES) or any(not math.isfinite(v) or v < 0 for v in self.categories.values()) or sum(self.categories.values()) <= 0:
-            raise ValueError('invalid category weights')
-        if not self.pitch_bins or any(len(b) != 3 or not all(math.isfinite(v) for v in b) or b[0] <= 0 or b[1] < b[0] or b[2] < 0 for b in self.pitch_bins) or sum(b[2] for b in self.pitch_bins) <= 0:
-            raise ValueError('invalid pitch bins')
-
-
-def _choice(rng, weights):
-    keys = list(weights)
-    return rng.choices(keys, weights=[weights[k] for k in keys], k=1)[0]
-
-
-def _game(rng, category, pitch, size, *, coverage_exploration_fraction=.12, coverage_preference_exponent=1.5):
-    # Conditioning board size on category prevents infeasible samples from
-    # silently changing the requested pitch. Typical sizes are preferred.
-    cw, ch = size[0] / pitch, size[1] / pitch
-    if category == 'complete':
-        max_cols, max_rows = int((size[0] - 30) / pitch), int((size[1] - 30) / pitch)
-        candidates = [(r, c, weight) for r, c, weight in (
-            (9, 9, 5.), (16, 16, 5.), (16, 30, 5.), (5, 5, .5), (6, 8, .5))
-            if r <= max_rows and c <= max_cols]
-        if max_rows >= 5 and max_cols >= 5:
-            for _ in range(5):
-                candidates.append((rng.randint(5, min(100, max_rows)), rng.randint(5, min(100, max_cols)), 1.))
-        if not candidates:
-            raise ValueError('complete board does not fit requested pitch')
-        explore = rng.random() < coverage_exploration_fraction
-        weights = [weight * (1. if explore else ((r * c * pitch * pitch) / (size[0] * size[1])) ** coverage_preference_exponent)
-                   for r, c, weight in candidates]
-        rows, columns, _ = rng.choices(candidates, weights=weights, k=1)[0]
-    else:
-        min_rows, min_cols = max(5, math.ceil(ch) + 2), max(5, math.ceil(cw) + 2)
-        if max(min_rows, min_cols) > 100:
-            raise ValueError('partial crop requires board larger than renderer policy')
-        standards = [(r, c) for r, c in ((9, 9), (16, 16), (16, 30)) if r >= min_rows and c >= min_cols]
-        if standards and rng.random() < .4:
-            rows, columns = rng.choice(standards)
-        else:
-            rows = rng.randint(min_rows, min(100, min_rows + rng.randint(4, 25)))
-            columns = rng.randint(min_cols, min(100, min_cols + rng.randint(4, 35)))
-    style = rng.choice(STYLES)
-    # Large boards use compact native tiles before scaling to the desired pitch.
-    cell_size = rng.randint(12, 22) if rows * columns > 900 else rng.randint(16, 40)
-    progress_kind = _choice(rng, {'hidden': 20, 'early': 25, 'mid': 30, 'late': 20, 'finished': 5})
-    if progress_kind == 'hidden':
-        status, progress = 'new', 0.
-    elif progress_kind == 'finished':
-        status = rng.choice(('won', 'lost'))
-        progress = 1. if status == 'won' else rng.uniform(.2, .95)
-    else:
-        status = 'active'
-        progress = rng.uniform(*{'early': (.05, .25), 'mid': (.25, .65), 'late': (.65, .95)}[progress_kind])
-    appearance = {'style': style, 'theme': rng.choice(THEMES[style]), 'cell_size': cell_size,
-                  'font_family': rng.choice(('Arial', 'Tahoma', 'Verdana')), 'font_scale': rng.uniform(.65, .77),
-                  'bold': rng.random() < .9}
-    if style == 'google':
-        appearance['boundary_ratio'] = rng.choice((0., .06, .08, .10))
-    if style == 'windows7':
-        appearance['mine_variant'] = rng.choice(('classic', 'flower'))
-    return {'rows': rows, 'columns': columns, 'mine_count': max(1, min(rows * columns - 1, round(rows * columns * rng.uniform(.12, .20)))),
-            'status': status, 'progress': progress, 'seed': rng.getrandbits(64),
-            'elapsed_seconds': 0 if status == 'new' else rng.randint(1, 999), 'appearance': appearance}, progress_kind
-
-
-def _desktop(rng):
-    style = _choice(rng, {'modern': 75, 'aero': 15, 'classic': 10})
-    return {'shell': 'taskbar', 'style': style, 'color_scheme': 'default' if style == 'classic' else rng.choice(('light', 'dark')),
-            'taskbar_layout': rng.choice(('left', 'centered')), 'accent_color': None,
-            'clock_time': '10:08', 'clock_date': '2025/06/12'}
-
-
-def _scene(rng, game, negative_kind=None, desktop_fraction=.8):
-    seed = rng.getrandbits(64)
-    if game is not None and (game['rows'] * game['columns'] > 700 or rng.random() >= desktop_fraction):
-        return {'mode': 'game', 'seed': seed, 'windows': [{'type': 'minesweeper', 'content': game}]}
-    windows = []
-    if negative_kind is not None:
-        kind = rng.choice(('spreadsheet', 'sudoku', 'other_puzzle')) if negative_kind == 'hard_negative' else rng.choice(('browser', 'file_manager', 'document_editor', 'settings'))
-        windows.append({'type': kind, 'seed': rng.getrandbits(64)})
-    else:
-        windows.append({'type': 'minesweeper', 'content': game})
-        if rng.random() < .45:
-            windows.append({'type': rng.choice(('spreadsheet', 'sudoku', 'browser', 'other_puzzle')), 'seed': rng.getrandbits(64)})
-    return {'mode': 'desktop', 'seed': seed, 'layout_seed': rng.getrandbits(64),
-            'screen': {'width': 1600, 'height': 1000}, 'desktop': _desktop(rng),
-            'wallpaper': {'category': 'procedural', 'seed': rng.getrandbits(64)}, 'windows': windows}
+from .sampling_config import CATEGORIES, GenerationConfig
+from .sampler import _choice, _game, _desktop, _scene
 
 
 def _crop_axis(rng, low, high, span, mode, edge=None, source_length=None, prefer_source=False):
@@ -280,6 +147,7 @@ def _write_json(path, value):
 
 def _generate_one(task):
     """Spawn-safe worker: render, crop and write locally; return compact metadata."""
+    from pydantic import ValidationError
     from synthetic_scenes.render import PlacementError, render_scene
 
     config = task['config']
@@ -303,7 +171,7 @@ def _generate_one(task):
                 coverage_exploration_fraction=config['coverage_exploration_fraction'],
                 coverage_preference_exponent=config['coverage_preference_exponent'])
             request = _scene(rng, game, category if negative else None, config['desktop_fraction'])
-            image, resolved, annotations = render_scene(request, scene_details=True, cell_details=False, wallpaper_assets={})
+            image, resolved, annotations = render_scene(request, details=('scene',), wallpaper_assets={})
             boards = annotations['boards']
             if negative:
                 if boards:
@@ -344,6 +212,8 @@ def _generate_one(task):
                 if side_count != {'complete': 4, 'interior': 0, 'side': 1, 'corner': 2}[category]:
                     raise ValueError('actual crop category differs from requested category')
             break
+        except ValidationError:
+            raise
         except (PlacementError, ValueError) as exc:
             error = exc
             retries['sampling_or_placement'] += 1
@@ -382,10 +252,8 @@ def _generate_one(task):
     blur = augmentation_rng.choice((0., 0., 0., .25, .5))
     brightness = augmentation_rng.uniform(.95, 1.05)
     contrast = augmentation_rng.uniform(.95, 1.05)
-    if blur:
-        image = image.filter(ImageFilter.GaussianBlur(blur))
-    image = ImageEnhance.Brightness(image).enhance(brightness)
-    image = ImageEnhance.Contrast(image).enhance(contrast)
+    from synthetic_scenes.augmentation import adjust_image
+    image = adjust_image(image, blur=blur, brightness=brightness, contrast=contrast)
     # Rendered surroundings are known background. Intentional padding is
     # applied after all image transforms and excluded by the existing mask.
     padding_rng = random.Random(f'{seed}:{split}:{index}:{attempt}:padding')

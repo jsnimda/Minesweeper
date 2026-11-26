@@ -4,7 +4,7 @@
 Weights are relative; they do not have to sum to 100.
 """
 
-SCOPE = {
+SAMPLING_CONFIG = {
     "scene_mode": {"desktop": 80, "game": 15, "grid": 5},
     "wallpaper_placement": {"cover": 80, "fit": 15, "repeat": 5},
     # Desktop appearance

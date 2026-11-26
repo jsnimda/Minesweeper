@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .dataset import PhaseDataset
+from ..dataset.loader import PhaseDataset
 from .decoder import decode_phase
 from .metrics import TargetMetrics
 from .model import PhaseGridUNet, load_phase_weights, phase_predictions

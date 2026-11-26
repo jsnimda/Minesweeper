@@ -7,7 +7,7 @@ import pytest
 
 from grid_geometry.phase.decoder import AxisExtent, FrequencyCandidate, GridHypothesis
 from grid_geometry.phase.global_geometry import fuse_occupancy, recognize_global
-from grid_geometry.phase.targets import PhaseGeometry, phase_targets
+from grid_geometry.dataset.targets import PhaseGeometry, phase_targets
 from grid_geometry.phase.tiles import TileObservation, consensus, observe_tiles
 
 

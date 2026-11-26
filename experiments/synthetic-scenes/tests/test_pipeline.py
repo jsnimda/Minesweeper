@@ -6,7 +6,7 @@ import pytest
 from PIL import Image
 
 from synthetic_scenes.coordinates import intersects, transform_board
-from synthetic_scenes.scene import GameSpec, plan_windows
+from synthetic_scenes.scene import GameSpec, _measure, plan_windows
 from synthetic_scenes.sampling import sample_scene
 from synthetic_scenes.augmentation import augment_scene
 from synthetic_scenes.exporters import (geometry_sample, geometry_heatmaps, cell_sample,
@@ -37,19 +37,20 @@ def test_plan():
 def test_plan_reaches_configured_minimum_on_small_desktop():
     appearance = {'style': 'classic', 'cell_size': 40}
     spec = GameSpec(rows=8, appearance=appearance)
+    assert _measure(spec, 'desktop', 12)[0] == (126, 190)
     for attempts in (1, 60):
-        plan = plan_windows([spec], (240, 220), random.Random(1),
+        plan = plan_windows([spec], (240, 230), random.Random(1),
                             min_cell_size=12, attempts=attempts)
         assert plan[0]['cell_size'] == 12
         _, top, _, bottom = plan[0]['box']
-        assert (top, bottom) == (0, 180)
+        assert (top, bottom) == (0, 190)
     with pytest.raises(ValueError, match='Could not fit all games'):
-        plan_windows([GameSpec(appearance=appearance)], (240, 220), random.Random(1))
+        plan_windows([GameSpec(appearance=appearance)], (240, 230), random.Random(1))
 
 
 def test_transform_and_augment():
     image,meta=example()
-    result,new=augment_scene(image,meta,scale=.63,blur=.2,jpeg_quality=90)
+    result,new=augment_scene(image,meta,resize_factor=.63,blur=.2,jpeg_quality=90)
     assert result.size==(19,13)
     assert new['boards'][0]['boxes']['grid']==pytest.approx((3*19/30,4*13/20,24*19/30,14*13/20))
     assert meta['boards'][0]['x_edges']==[3,13.5,24]
@@ -161,3 +162,21 @@ def test_dataset_without_rasterizer(tmp_path, monkeypatch):
     assert json.loads((root/'config.json').read_text())['status']=='complete'
     with pytest.raises(FileExistsError):
         dataset.generate_dataset(root)
+
+
+def test_augmentation_brightness_contrast_and_noop():
+    image, metadata = example()
+    original, unchanged = augment_scene(image, metadata)
+    assert original is image
+    assert unchanged['boards'][0]['boxes']['grid'] == metadata['boards'][0]['boxes']['grid']
+    adjusted, _ = augment_scene(image, metadata, brightness=.5, contrast=1.)
+    assert adjusted.getpixel((0, 0)) == (127, 127, 127)
+
+
+def test_render_scene_rejects_unknown_details_before_rendering():
+    from synthetic_scenes.render import render_scene
+
+    with pytest.raises(ValueError, match='Unsupported details'):
+        render_scene({}, details=('scenes',))
+    with pytest.raises(ValueError, match='collection'):
+        render_scene({}, details='scene')

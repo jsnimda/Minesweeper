@@ -8,9 +8,9 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from grid_geometry.phase.dataset import PhaseDataset, inspect_dataset
-from grid_geometry.phase.generate_dataset import GenerationConfig, _crop_box, _geometry, _pitch_bin, generate_dataset
-from grid_geometry.phase.targets import PhaseGeometry
+from grid_geometry.dataset.loader import PhaseDataset, inspect_dataset
+from grid_geometry.dataset.generator import GenerationConfig, _crop_box, _geometry, _pitch_bin, generate_dataset
+from grid_geometry.dataset.targets import PhaseGeometry
 
 
 def _write_dataset(root):
@@ -113,7 +113,7 @@ def test_split_overlap_is_reported(tmp_path):
 
 
 def test_source_aware_crops_preserve_category_and_reduce_padding():
-    from grid_geometry.phase.generate_dataset import _crop_axis
+    from grid_geometry.dataset.generator import _crop_axis
 
     # A complete-board crop has a feasible placement inside the source.
     for seed in range(20):
@@ -129,8 +129,8 @@ def test_source_aware_crops_preserve_category_and_reduce_padding():
 
 
 def test_compact_fractions_match_targets_with_fractional_geometry():
-    from grid_geometry.phase.generate_dataset import sample_fractions
-    from grid_geometry.phase.targets import phase_targets
+    from grid_geometry.dataset.generator import sample_fractions
+    from grid_geometry.dataset.targets import phase_targets
 
     size = (32, 24)
     geometry = PhaseGeometry(2.25, -2.5, 7.5, 9.25, (2.5, -1.25, 24.5, 19.75))
@@ -149,7 +149,7 @@ def test_compact_fractions_match_targets_with_fractional_geometry():
 
 
 def test_coverage_summary_and_config_validation():
-    from grid_geometry.phase.generate_dataset import summarize_fractions
+    from grid_geometry.dataset.generator import summarize_fractions
     records = [dict(category='complete', actual_pitch_bin_x='6-11', grid_coverage_fraction=.04,
                     phase_supervision_fraction=.04, grid_occupancy_fraction=.04, padding_fraction=.2),
                dict(category='negative', actual_pitch_bin_x=None, grid_coverage_fraction=None,
@@ -165,7 +165,7 @@ def test_coverage_summary_and_config_validation():
 
 
 def test_sampling_preference_keeps_standard_and_custom_options():
-    from grid_geometry.phase.generate_dataset import _game
+    from grid_geometry.dataset.generator import _game
     dimensions = []
     for seed in range(100):
         game, _ = _game(random.Random(seed), 'complete', 9., (384, 384))
@@ -237,3 +237,54 @@ def test_requested_context_is_recorded_without_downloads(tmp_path, context):
     for index in range(2):
         record = PhaseDataset(root, 'train').load_sample(index).metadata
         assert record['requested_context'] == context
+
+
+def test_scene_validation_errors_are_not_retried(tmp_path, monkeypatch):
+    from pydantic import ValidationError
+    from synthetic_scenes.schema import SceneSpec
+    from grid_geometry.dataset import generator
+
+    calls = []
+
+    def invalid_game(*args, **kwargs):
+        calls.append(1)
+        SceneSpec.model_validate({})
+
+    monkeypatch.setattr(generator, '_game', invalid_game)
+    excluded = tmp_path / 'excluded.json'
+    excluded.write_text('[]')
+    config = asdict(GenerationConfig(negative_fraction=0., max_attempts=3))
+    task = {'config': config, 'split': 'train', 'index': 0, 'excluded_path': str(excluded)}
+    with pytest.raises(ValidationError):
+        generator._generate_one(task)
+    assert len(calls) == 1
+
+
+def test_geometry_sampled_scenes_match_public_schema():
+    from grid_geometry.dataset.sampler import _game, _scene
+    from synthetic_scenes.schema import SceneSpec
+
+    rng = random.Random(42)
+    for _ in range(40):
+        game, _ = _game(rng, 'complete', 12., (384, 384))
+        SceneSpec.model_validate(_scene(rng, game))
+    SceneSpec.model_validate(_scene(rng, None, 'hard_negative'))
+
+
+def test_scene_sampling_retries_remain_bounded(tmp_path, monkeypatch):
+    from grid_geometry.dataset import generator
+
+    calls = []
+
+    def infeasible_game(*args, **kwargs):
+        calls.append(1)
+        raise ValueError('infeasible crop')
+
+    monkeypatch.setattr(generator, '_game', infeasible_game)
+    excluded = tmp_path / 'excluded.json'
+    excluded.write_text('[]')
+    config = asdict(GenerationConfig(negative_fraction=0., max_attempts=3))
+    task = {'config': config, 'split': 'train', 'index': 0, 'excluded_path': str(excluded)}
+    with pytest.raises(RuntimeError, match='after 3 attempts'):
+        generator._generate_one(task)
+    assert len(calls) == 3

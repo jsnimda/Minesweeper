@@ -1,0 +1,86 @@
+"""Sample scenes and games for the phase dataset."""
+import math
+
+from .sampling_config import STYLES, THEMES
+
+def _choice(rng, weights):
+    keys = list(weights)
+    return rng.choices(keys, weights=[weights[k] for k in keys], k=1)[0]
+
+
+def _game(rng, category, pitch, size, *, coverage_exploration_fraction=.12, coverage_preference_exponent=1.5):
+    # Conditioning board size on category prevents infeasible samples from
+    # silently changing the requested pitch. Typical sizes are preferred.
+    cw, ch = size[0] / pitch, size[1] / pitch
+    if category == 'complete':
+        max_cols, max_rows = int((size[0] - 30) / pitch), int((size[1] - 30) / pitch)
+        candidates = [(r, c, weight) for r, c, weight in (
+            (9, 9, 5.), (16, 16, 5.), (16, 30, 5.), (5, 5, .5), (6, 8, .5))
+            if r <= max_rows and c <= max_cols]
+        if max_rows >= 5 and max_cols >= 5:
+            for _ in range(5):
+                candidates.append((rng.randint(5, min(100, max_rows)), rng.randint(5, min(100, max_cols)), 1.))
+        if not candidates:
+            raise ValueError('complete board does not fit requested pitch')
+        explore = rng.random() < coverage_exploration_fraction
+        weights = [weight * (1. if explore else ((r * c * pitch * pitch) / (size[0] * size[1])) ** coverage_preference_exponent)
+                   for r, c, weight in candidates]
+        rows, columns, _ = rng.choices(candidates, weights=weights, k=1)[0]
+    else:
+        min_rows, min_cols = max(5, math.ceil(ch) + 2), max(5, math.ceil(cw) + 2)
+        if max(min_rows, min_cols) > 100:
+            raise ValueError('partial crop requires board larger than renderer policy')
+        standards = [(r, c) for r, c in ((9, 9), (16, 16), (16, 30)) if r >= min_rows and c >= min_cols]
+        if standards and rng.random() < .4:
+            rows, columns = rng.choice(standards)
+        else:
+            rows = rng.randint(min_rows, min(100, min_rows + rng.randint(4, 25)))
+            columns = rng.randint(min_cols, min(100, min_cols + rng.randint(4, 35)))
+    style = rng.choice(STYLES)
+    # Large boards use compact native tiles before scaling to the desired pitch.
+    cell_size = rng.randint(12, 22) if rows * columns > 900 else rng.randint(16, 40)
+    progress_kind = _choice(rng, {'hidden': 20, 'early': 25, 'mid': 30, 'late': 20, 'finished': 5})
+    if progress_kind == 'hidden':
+        status, progress = 'new', 0.
+    elif progress_kind == 'finished':
+        status = rng.choice(('won', 'lost'))
+        progress = 1. if status == 'won' else rng.uniform(.2, .95)
+    else:
+        status = 'active'
+        progress = rng.uniform(*{'early': (.05, .25), 'mid': (.25, .65), 'late': (.65, .95)}[progress_kind])
+    appearance = {'style': style, 'theme': rng.choice(THEMES[style]), 'cell_size': cell_size,
+                  'font_family': rng.choice(('Arial', 'Tahoma', 'Verdana')), 'font_scale': rng.uniform(.65, .77),
+                  'bold': rng.random() < .9}
+    if style == 'google':
+        appearance['boundary_ratio'] = rng.choice((0., .06, .08, .10))
+    if style == 'windows7':
+        appearance['mine_variant'] = rng.choice(('classic', 'flower'))
+    return {'rows': rows, 'columns': columns, 'mine_count': max(1, min(rows * columns - 1, round(rows * columns * rng.uniform(.12, .20)))),
+            'status': status, 'progress': progress, 'seed': rng.getrandbits(64),
+            'elapsed_seconds': 0 if status == 'new' else rng.randint(1, 999), 'appearance': appearance}, progress_kind
+
+
+def _desktop(rng):
+    style = _choice(rng, {'modern': 75, 'aero': 15, 'classic': 10})
+    return {'shell': 'taskbar', 'style': style, 'color_scheme': 'default' if style == 'classic' else rng.choice(('light', 'dark')),
+            'taskbar_layout': rng.choice(('left', 'centered')), 'accent_color': None,
+            'clock_time': '10:08', 'clock_date': '2025/06/12'}
+
+
+def _scene(rng, game, negative_kind=None, desktop_fraction=.8):
+    seed = rng.getrandbits(64)
+    if game is not None and (game['rows'] * game['columns'] > 700 or rng.random() >= desktop_fraction):
+        return {'mode': 'game', 'seed': seed, 'windows': [{'type': 'minesweeper', 'content': game}]}
+    windows = []
+    if negative_kind is not None:
+        kind = rng.choice(('spreadsheet', 'sudoku', 'other_puzzle')) if negative_kind == 'hard_negative' else rng.choice(('browser', 'file_manager', 'document_editor', 'settings'))
+        windows.append({'type': kind, 'seed': rng.getrandbits(64)})
+    else:
+        windows.append({'type': 'minesweeper', 'content': game})
+        if rng.random() < .45:
+            windows.append({'type': rng.choice(('spreadsheet', 'sudoku', 'browser', 'other_puzzle')), 'seed': rng.getrandbits(64)})
+    return {'mode': 'desktop', 'seed': seed, 'layout_seed': rng.getrandbits(64),
+            'screen': {'width': 1600, 'height': 1000}, 'desktop': _desktop(rng),
+            'wallpaper': {'category': 'procedural', 'seed': rng.getrandbits(64)}, 'windows': windows}
+
+

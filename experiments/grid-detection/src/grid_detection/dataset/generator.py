@@ -15,7 +15,7 @@ from synthetic_scenes.assets.wallpapers.getters import get_wallpapers
 from synthetic_scenes.augmentation import augment_scene
 from synthetic_scenes.render import PlacementError, render_scene
 from .sampler import sample_scene
-from .scope import SCOPE
+from .sampling_config import SAMPLING_CONFIG
 from .yolo import YOLO_CLASSES, write_yolo_config, yolo_lines
 
 GENERATOR_REVISION = 4  # Procedural game-region rendering changed.
@@ -55,7 +55,7 @@ def _generate_one(task):
         try:
             request = sample_scene(scene_seed)
             image, resolved, annotations = render_scene(
-                request, scene_details=task['scene_details'], wallpaper_assets=_worker_assets)
+                request, details=('scene',) if task['scene_details'] else (), wallpaper_assets=_worker_assets)
         except PlacementError as exc:
             retries['placement_retries'] += 1
             last_error = exc
@@ -72,7 +72,7 @@ def _generate_one(task):
     if task['augment']:
         rng = random.Random(f'{seed}:{split}:{index}:{attempt}:augmentation')
         image, annotations = augment_scene(image, annotations,
-            scale=rng.uniform(.65, 1.25), blur=rng.choice((0., 0., .25, .5)),
+            resize_factor=rng.uniform(.65, 1.25), blur=rng.choice((0., 0., .25, .5)),
             jpeg_quality=rng.choice((None, None, 85, 95)))
     name = f'{index:06d}'
     mode = task['mode']
@@ -220,7 +220,7 @@ def generate_dataset(destination, train=100, val=20, test=0, seed=42, workers=1,
     config = {'generator_revision': GENERATOR_REVISION, 'train': train, 'val': val, 'test': test,
               'seed': seed, 'workers': workers, 'png_compression': png_compression,
               'augment': augment, 'max_attempts': max_attempts, 'scene_details': scene_details,
-              'sampling_scope': SCOPE, 'classes': YOLO_CLASSES, 'status': 'incomplete'}
+              'sampling_scope': SAMPLING_CONFIG, 'classes': YOLO_CLASSES, 'status': 'incomplete'}
     _write_json(root / 'config.json', config)
     for split, _ in counts:
         for directory in ('images', 'labels'):
