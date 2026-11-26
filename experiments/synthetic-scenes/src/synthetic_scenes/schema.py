@@ -38,12 +38,16 @@ class ScreenSpec(SceneModel):
 
 class DesktopSpec(SceneModel):
     shell: Literal['taskbar', 'dock', 'top_panel']
-    style: Literal['modern', 'aero', 'classic']
+    style: Literal['modern', 'classic']
     color_scheme: Literal['default', 'light', 'dark']
     accent_color: StrictStr | None = None
-    taskbar_layout: Literal['left', 'centered', ''] | None = None
     clock_time: StrictStr = '12:34'
     clock_date: StrictStr = '11/21/2026'
+    show_taskbar: StrictBool = True
+    show_dock: StrictBool = True
+    show_status_bar: StrictBool = True
+    show_top_panel: StrictBool = True
+    dock_height: Annotated[StrictInt, Field(ge=32, le=120)] = 74
 
     @field_validator('accent_color')
     @classmethod

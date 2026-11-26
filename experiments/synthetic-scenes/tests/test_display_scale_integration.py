@@ -16,7 +16,7 @@ def scene(style='classic', scale=1.5, zoom=1.25):
     return {
         'mode': 'desktop', 'seed': 5,
         'screen': {'width': 1600, 'height': 1000, 'scale': scale},
-        'desktop': {'shell': 'taskbar', 'style': 'aero', 'color_scheme': 'light'},
+        'desktop': {'shell': 'taskbar', 'style': 'modern', 'color_scheme': 'light'},
         'wallpaper': {'category': 'procedural', 'seed': 9},
         'windows': [{'type': 'minesweeper', 'content': {
             'rows': 4, 'columns': 5, 'mine_count': 2, 'status': 'new',
@@ -26,7 +26,7 @@ def scene(style='classic', scale=1.5, zoom=1.25):
     }
 
 
-@pytest.mark.parametrize('shell,style', [('taskbar', 'classic'), ('taskbar', 'aero'),
+@pytest.mark.parametrize('shell,style', [('taskbar', 'classic'), ('taskbar', 'modern'),
                                          ('dock', 'modern'), ('top_panel', 'modern')])
 def test_work_area_uses_component_boundaries(shell, style):
     desktop = {'shell': shell, 'style': style, 'color_scheme': 'light'}
@@ -37,7 +37,7 @@ def test_work_area_uses_component_boundaries(shell, style):
         assert area[3] == geometry['taskbar'][1] - (pixels(8, scale) if style == 'classic' else 0)
     elif shell == 'dock':
         assert area[1] == geometry['status_bar'][3]
-        assert area[3] == geometry['dock'][1] - pixels(14, scale)
+        assert area[3] == geometry['dock'][1]
     else:
         assert area[1] == geometry['top_panel'][3]
 
@@ -59,7 +59,7 @@ def test_combined_scale_and_physical_annotations(style, scale, zoom):
     assert parameters['cell_size'] == max(8, round(17 * zoom * scale))
     assert parameters['pitch_x'] == parameters['pitch_y'] == parameters['cell_size'] + parameters['gap']
     content_size = measure_game_region(4, 5, style, 17, zoom * scale)
-    complete, offset = window_geometry(content_size, style='aero', scale=scale)
+    complete, offset = window_geometry(content_size, style='modern', scale=scale)
     x, y, right, bottom = board['window_box']
     assert (right-x, bottom-y) == complete
     assert board['boxes']['game_region'] == (x+offset[0], y+offset[1], x+offset[0]+content_size[0], y+offset[1]+content_size[1])
@@ -116,12 +116,12 @@ def test_application_logical_size_and_frame_are_scaled_once():
     request = scene(scale=1.5)
     request['windows'] = [{'type': 'calculator', 'seed': 3}]
     image, resolved, _ = render_scene(request, details=['scene'])
-    expected, _ = window_geometry((pixels(340, 1.5), pixels(520, 1.5)), style='aero', scale=1.5)
+    expected, _ = window_geometry((pixels(340, 1.5), pixels(520, 1.5)), style='modern', scale=1.5)
     assert resolved['layout'][0]['window_size'] == expected
     assert image.size == (1600, 1000)
 
 
-@pytest.mark.parametrize('style', ['modern', 'aero', 'classic'])
+@pytest.mark.parametrize('style', ['modern', 'classic'])
 def test_oversized_application_retains_native_size_and_is_clipped(style):
     from synthetic_scenes.desktop_rendering.applications.browser import render_browser
 
@@ -191,7 +191,7 @@ def test_oversized_application_does_not_change_game_placement_or_annotations():
 
 
 @pytest.mark.parametrize('shell', ['taskbar', 'dock', 'top_panel'])
-@pytest.mark.parametrize('style', ['modern', 'aero'])
+@pytest.mark.parametrize('style', ['modern', 'classic'])
 def test_shell_components_are_composed_over_oversized_application(monkeypatch, shell, style):
     from PIL import ImageChops
     from synthetic_scenes.desktop_rendering import screenshot

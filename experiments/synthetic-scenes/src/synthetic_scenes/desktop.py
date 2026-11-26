@@ -8,7 +8,6 @@ from .wallpaper import render_procedural_wallpaper, sample_procedural_subtype
 
 CHROME = {
     'classic': (4, 26, 20),
-    'aero': (7, 32, 22),
     'modern': (1, 32, 0),
     'browser': (1, 74, 0),
     'none': (0, 0, 0),
@@ -45,7 +44,7 @@ def wrap_window(content, chrome, title='Minesweeper'):
     image = Image.new('RGB', size, background)
     draw = ImageDraw.Draw(image)
     w, h = size
-    dark = chrome in ('classic', 'aero')
+    dark = chrome == 'classic'
     title_color = '#183e83' if chrome == 'classic' else '#41688c' if dark else '#f0f2f5'
     ink = 'white' if dark else '#242424'
     draw.rectangle((border, border, w-border-1, border+title_h-1), fill=title_color)

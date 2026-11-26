@@ -97,12 +97,6 @@ def sample_desktop(rng: random.Random) -> dict:
             if name in allowed
         },
     )
-    taskbar_layout = (
-        choose(rng, SAMPLING_CONFIG["taskbar_layout"])
-        if shell == "taskbar" and style == "modern"
-        else None
-    )
-
     color_scheme = choose(
         rng, SAMPLING_CONFIG["color_scheme"][style]
     )
@@ -128,7 +122,6 @@ def sample_desktop(rng: random.Random) -> dict:
     return {
         "shell": shell,
         "style": style,
-        "taskbar_layout": taskbar_layout,
         "color_scheme": color_scheme,
         "accent_color": accent_color,
         "clock_time": clock_time,

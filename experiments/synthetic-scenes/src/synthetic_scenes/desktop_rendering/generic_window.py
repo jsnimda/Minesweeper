@@ -11,7 +11,6 @@ import skia
 
 from .scaling import pixels, validate_scale
 from .desktop import _palette
-from .desktop_components.primitives import _glass_panel
 
 
 Box = tuple[int, int, int, int]
@@ -20,7 +19,6 @@ TITLE_HEIGHT = 40
 CLASSIC_TITLE_HEIGHT = 32
 MENU_HEIGHT = 28
 CONTENT_PADDING = 1
-AERO_FRAME = 6
 CLASSIC_FRAME = 4
 
 
@@ -67,7 +65,9 @@ def window_geometry(content_size, menu_items=(), *, style="modern", scale=1.0):
     width, height = content_size
     if width <= 0 or height <= 0:
         raise ValueError("Content must have positive dimensions")
-    logical_frame = AERO_FRAME if style == "aero" else CLASSIC_FRAME if style == "classic" else 0
+    if style not in {"modern", "classic"}:
+        raise ValueError(f"Unsupported window style: {style}")
+    logical_frame = CLASSIC_FRAME if style == "classic" else 0
     frame = pixels(logical_frame, scale) if logical_frame else 0
     padding = pixels(CONTENT_PADDING, scale)
     header = title_height(style, scale)
@@ -81,436 +81,61 @@ def window_size(content_size, menu_items=(), *, style="modern", scale=1.0):
     return window_geometry(content_size, menu_items, style=style, scale=scale)[0]
 
 
-def _top_panel_caption_controls(
-    canvas: skia.Canvas,
-    x: int,
-    y: int,
-    width: int,
-    foreground: str,
-    dark: bool,
-) -> None:
-    """Draw compact GNOME-inspired window controls."""
+def _caption_layout(width, header_height, style, shell):
+    """Return bounded control rectangles and the title's horizontal interval.
 
-    cy = y + TITLE_HEIGHT / 2
-
-    centers = (
-        x + width - 88,
-        x + width - 56,
-        x + width - 24,
-    )
-
-    button_bg = "#464C57" if dark else "#E1E5EB"
-    symbol_color = "#F1F3F6" if dark else "#303844"
-
-    for cx in centers:
-        canvas.drawCircle(
-            cx, cy, 12,
-            _paint(button_bg),
-        )
-
-    # Minimize.
-    _line(
-        canvas,
-        centers[0] - 4, cy + 1,
-        centers[0] + 4, cy + 1,
-        symbol_color,
-        1.6,
-    )
-
-    # Maximize.
-    canvas.drawRect(
-        skia.Rect.MakeXYWH(
-            centers[1] - 4,
-            cy - 4,
-            8,
-            8,
-        ),
-        _paint(symbol_color, stroke=True),
-    )
-
-    # Close: slightly stronger circular surface.
-    canvas.drawCircle(
-        centers[2], cy, 12,
-        _paint("#D7DCE4" if not dark else "#59616E"),
-    )
-
-    _line(
-        canvas,
-        centers[2] - 4, cy - 4,
-        centers[2] + 4, cy + 4,
-        symbol_color,
-        1.7,
-    )
-    _line(
-        canvas,
-        centers[2] + 4, cy - 4,
-        centers[2] - 4, cy + 4,
-        symbol_color,
-        1.7,
-    )
+    Coordinates are logical and relative to the window. Close is retained first;
+    maximize and minimize are added only when their complete slots fit.
+    """
+    left_controls = style == "modern" and shell == "dock"
+    kind = "classic" if style == "classic" else "dock" if left_controls else shell
+    button_size = 16 if kind == "dock" else 20 if kind == "classic" else 22
+    margin, gap = 4, 4
+    if header_height < button_size + 2:
+        return kind, [], (0, 0)
+    count = min(3, max(0, int((width - 2 * margin + gap) // (button_size + gap))))
+    names = ("close", "minimize", "maximize") if left_controls else ("close", "maximize", "minimize")
+    top = (header_height - button_size) / 2
+    controls = []
+    for index in range(count):
+        left = margin + index * (button_size + gap) if left_controls else (
+            width - margin - button_size - index * (button_size + gap))
+        controls.append((names[index], (left, top, left + button_size, top + button_size)))
+    if left_controls:
+        title_left = min(width, controls[-1][1][2] + 6) if controls else min(8, width)
+        title_right = max(title_left, width - 8)
+    else:
+        title_left = min(8, width)
+        title_right = max(title_left, (controls[-1][1][0] - 6) if controls else width - 8)
+    return kind, controls, (title_left, min(width, title_right))
 
 
-def _aero_caption_controls(
-    canvas: skia.Canvas,
-    x: int,
-    y: int,
-    width: int,
-) -> None:
-    """Draw compact Windows 7-style glass caption buttons."""
+def _caption_controls(canvas, x, y, kind, controls, foreground, dark):
+    """Draw only the controls for which the titlebar has room."""
+    dock_colors = {"close": "#E66A65", "minimize": "#E5B34C", "maximize": "#68B97B"}
+    for name, (left, top, right, bottom) in controls:
+        left, top, right, bottom = x + left, y + top, x + right, y + bottom
+        cx, cy = (left + right) / 2, (top + bottom) / 2
+        if kind == "dock":
+            canvas.drawCircle(cx, cy, 6, _paint(dock_colors[name]))
+            continue
+        if kind == "classic":
+            button = "#50555D" if dark else "#DDE0E4"
+            edge = "#9299A2" if dark else "#7F8790"
+            canvas.drawRect(skia.Rect.MakeLTRB(left, top, right, bottom), _paint(button))
+            canvas.drawRect(skia.Rect.MakeLTRB(left + .5, top + .5, right - .5, bottom - .5),
+                            _paint(edge, stroke=True))
+        elif kind == "top_panel":
+            canvas.drawCircle(cx, cy, 10, _paint("#505761" if dark else "#E0E5EB"))
 
-    # Wide, shallow Aero caption buttons with a small right glass margin.
-    top = y + 1
-    height = 22
-
-    button_widths = (34, 34, 48)
-    right_margin = 8
-
-    left = x + width - sum(button_widths) - right_margin
-
-    # Minimize, maximize, close.
-    buttons = (
-        (left,      button_widths[0], "#A6C5DF"),
-        (left + 34, button_widths[1], "#A6C5DF"),
-        (left + 68, button_widths[2], "#C84646"),
-    )
-
-    for i, (bx, bw, color) in enumerate(buttons):
-        rect = skia.Rect.MakeXYWH(bx, top, bw, height)
-
-        # Main translucent or red button surface.
-        canvas.drawRect(
-            rect,
-            _paint(color, 195 if i < 2 else 245),
-        )
-
-        # Brighter upper half for a glossy appearance.
-        canvas.drawRect(
-            skia.Rect.MakeXYWH(
-                bx + 1, top + 1,
-                bw - 2, height * 0.44,
-            ),
-            _paint(
-                "#FFFFFF",
-                68 if i < 2 else 43,
-            ),
-        )
-
-        # Subtle dark outline.
-        canvas.drawRect(
-            rect,
-            _paint("#40556C", 165, stroke=True),
-        )
-
-        # Thin highlight along the upper edge.
-        canvas.drawLine(
-            bx + 2, top + 1.5,
-            bx + bw - 2, top + 1.5,
-            _paint("#FFFFFF", 125),
-        )
-
-    cy = top + height / 2
-    centers = (
-        left + 17,
-        left + 51,
-        left + 92,
-    )
-
-    # Minimize.
-    _line(
-        canvas,
-        centers[0] - 5, cy + 4,
-        centers[0] + 5, cy + 4,
-        "#26384B",
-        1.5,
-    )
-
-    # Maximize.
-    canvas.drawRect(
-        skia.Rect.MakeXYWH(
-            centers[1] - 5, cy - 5, 10, 9
-        ),
-        _paint("#26384B", stroke=True),
-    )
-
-    # Close: white X on red.
-    _line(
-        canvas,
-        centers[2] - 5, cy - 5,
-        centers[2] + 5, cy + 5,
-        "#FFFFFF",
-        2,
-    )
-    _line(
-        canvas,
-        centers[2] + 5, cy - 5,
-        centers[2] - 5, cy + 5,
-        "#FFFFFF",
-        2,
-    )
-
-
-def _classic_caption_controls(
-    canvas: skia.Canvas,
-    x: int,
-    y: int,
-    width: int,
-    accent: str,
-) -> None:
-    """Draw glossy, accent-aware Classic caption buttons."""
-
-    def mix(color: str, target: str, amount: float) -> int:
-        a = color.lstrip("#")
-        b = target.lstrip("#")
-
-        rgb = [
-            round(
-                int(a[i:i + 2], 16) * (1 - amount)
-                + int(b[i:i + 2], 16) * amount
-            )
-            for i in (0, 2, 4)
-        ]
-
-        return skia.ColorSetRGB(*rgb)
-
-    def blend_hex(base: str, accent: str, amount: float) -> str:
-        a = base.lstrip("#")
-        b = accent.lstrip("#")
-
-        values = [
-            round(
-                int(a[i:i + 2], 16) * (1 - amount)
-                + int(b[i:i + 2], 16) * amount
-            )
-            for i in (0, 2, 4)
-        ]
-
-        return "#{:02X}{:02X}{:02X}".format(*values)
-
-    button_size = 24
-    gap = 4
-    right_margin = 6
-
-    top = y + (CLASSIC_TITLE_HEIGHT - button_size) / 2
-    left = (
-        x + width
-        - right_margin
-        - button_size * 3
-        - gap * 2
-    )
-
-    # Blend the Close button's red with the desktop accent.
-    # It remains recognizably red across different themes.
-    close_color = blend_hex("#D94A34", accent, 0.18)
-
-    buttons = (
-        (left, accent),
-        (left + button_size + gap, accent),
-        (left + (button_size + gap) * 2, close_color),
-    )
-
-    centers = []
-
-    for bx, base in buttons:
-        rect = skia.Rect.MakeXYWH(
-            bx, top, button_size, button_size
-        )
-
-        centers.append((
-            bx + button_size / 2,
-            top + button_size / 2,
-        ))
-
-        # Subtle glossy gradient based on the button color.
-        shader = skia.GradientShader.MakeLinear(
-            points=[
-                (bx, top),
-                (bx, top + button_size),
-            ],
-            colors=[
-                mix(base, "#FFFFFF", 0.22),
-                mix(base, "#000000", 0.13),
-            ],
-            positions=[0.0, 1.0],
-            mode=skia.TileMode.kClamp,
-        )
-
-        canvas.drawRoundRect(
-            rect, 5, 5,
-            skia.Paint(
-                Shader=shader,
-                AntiAlias=True,
-            ),
-        )
-
-        # Bright outline characteristic of Classic controls.
-        outline = skia.Paint(
-            Color=_color("#F4F8FF", 235),
-            AntiAlias=True,
-            Style=skia.Paint.kStroke_Style,
-            StrokeWidth=1.5,
-        )
-
-        canvas.drawRoundRect(
-            rect, 5, 5, outline
-        )
-
-        # Gloss highlight across the upper portion.
-        canvas.drawLine(
-            bx + 5, top + 3,
-            bx + button_size - 5, top + 3,
-            _paint("#FFFFFF", 105),
-        )
-
-    # Minimize — white horizontal line.
-    cx, cy = centers[0]
-    _line(
-        canvas,
-        cx - 5, cy + 4,
-        cx + 5, cy + 4,
-        "#FFFFFF", 2.2,
-    )
-
-    # Maximize — white square.
-    cx, cy = centers[1]
-    symbol = skia.Paint(
-        Color=_color("#FFFFFF"),
-        AntiAlias=True,
-        Style=skia.Paint.kStroke_Style,
-        StrokeWidth=2,
-    )
-
-    canvas.drawRect(
-        skia.Rect.MakeXYWH(
-            cx - 5, cy - 5, 10, 10
-        ),
-        symbol,
-    )
-
-    # Close — bold white X.
-    cx, cy = centers[2]
-
-    _line(
-        canvas,
-        cx - 5, cy - 5,
-        cx + 5, cy + 5,
-        "#FFFFFF", 2.5,
-    )
-
-    _line(
-        canvas,
-        cx + 5, cy - 5,
-        cx - 5, cy + 5,
-        "#FFFFFF", 2.5,
-    )
-
-
-def _caption_controls(
-    canvas,
-    x: int,
-    y: int,
-    width: int,
-    desktop: dict,
-    foreground: str,
-):
-    """Draw caption controls for each window style."""
-    shell = desktop["shell"]
-    style = desktop["style"]
-
-    cy = y + TITLE_HEIGHT // 2
-
-    if shell == "dock":
-        # Traffic-light-inspired controls.
-        colors = ("#E66A65", "#E5B34C", "#68B97B")
-
-        for i, color in enumerate(colors):
-            cx = x + 20 + i * 20
-            canvas.drawCircle(
-                cx, cy, 6,
-                _paint(color),
-            )
-        return
-
-    if shell == "top_panel":
-        _top_panel_caption_controls(
-            canvas,
-            x,
-            y,
-            width,
-            foreground,
-            dark=desktop["color_scheme"] == "dark",
-        )
-        return
-
-    if style == "aero":
-        _aero_caption_controls(canvas, x, y, width)
-        return
-
-    if style == "classic":
-        _classic_caption_controls(
-            canvas,
-            x,
-            y,
-            width,
-            accent=_palette(desktop)["accent"],
-        )
-        return
-
-    # Modern window controls.
-    centers = [
-        x + width - 78,
-        x + width - 51,
-        x + width - 24,
-    ]
-
-    # Subtle surface behind the Close button.
-    canvas.drawRoundRect(
-        skia.Rect.MakeXYWH(
-            centers[2] - 11,
-            cy - 11,
-            22,
-            22,
-        ),
-        6, 6,
-        _paint(
-            "#DFE7F0"
-            if desktop["color_scheme"] != "dark"
-            else "#525B68",
-            95,
-        ),
-    )
-
-    # Minimize.
-    _line(
-        canvas,
-        centers[0] - 4, cy + 3,
-        centers[0] + 4, cy + 3,
-        foreground,
-    )
-
-    # Maximize.
-    canvas.drawRect(
-        skia.Rect.MakeXYWH(
-            centers[1] - 4,
-            cy - 4,
-            8,
-            8,
-        ),
-        _paint(foreground, stroke=True),
-    )
-
-    # Close.
-    _line(
-        canvas,
-        centers[2] - 4, cy - 4,
-        centers[2] + 4, cy + 4,
-        foreground,
-    )
-    _line(
-        canvas,
-        centers[2] + 4, cy - 4,
-        centers[2] - 4, cy + 4,
-        foreground,
-    )
+        if name == "minimize":
+            _line(canvas, cx - 4, cy + 3, cx + 4, cy + 3, foreground)
+        elif name == "maximize":
+            canvas.drawRect(skia.Rect.MakeXYWH(cx - 4, cy - 4, 8, 8),
+                            _paint(foreground, stroke=True))
+        else:
+            _line(canvas, cx - 4, cy - 4, cx + 4, cy + 4, foreground)
+            _line(canvas, cx + 4, cy - 4, cx - 4, cy + 4, foreground)
 
 
 def draw_generic_window(
@@ -524,346 +149,95 @@ def draw_generic_window(
     *,
     scale: float = 1.0,
 ) -> dict[str, Box]:
-    """Draw one window and return screenshot-local annotations.
-
-    The caller places the window; content remains at its physical size.
-    The window itself, menu and title bar are not game_region.
-    """
+    """Draw a window and translate content-local boxes to physical pixels."""
     if desktop is None:
         raise ValueError("desktop configuration is required")
-
     for name, (x0, y0, x1, y1) in content_boxes.items():
-        if not (
-            0 <= x0 < x1 <= content_image.width()
-            and 0 <= y0 < y1 <= content_image.height()
-        ):
-            raise ValueError(
-                f"Invalid content box {name!r}"
-            )
+        if not (0 <= x0 < x1 <= content_image.width()
+                and 0 <= y0 < y1 <= content_image.height()):
+            raise ValueError(f"Invalid content box {name!r}")
 
     scale = validate_scale(scale)
     physical_x, physical_y = position
-    x, y = physical_x / scale, physical_y / scale
-    physical_w, physical_h = window_size(
-        (content_image.width(), content_image.height()),
-        menu_items,
-        style=desktop["style"],
-        scale=scale,
-    )
-    w, h = physical_w / scale, physical_h / scale
-
-    if x < 0 or y < 0:
+    if physical_x < 0 or physical_y < 0:
         raise ValueError("Window position must be nonnegative")
+    style = desktop["style"]
+    (physical_w, physical_h), (offset_x, offset_y) = window_geometry(
+        (content_image.width(), content_image.height()), menu_items, style=style, scale=scale)
+    content_x, content_y = physical_x + offset_x, physical_y + offset_y
+    x, y, w, h = physical_x / scale, physical_y / scale, physical_w / scale, physical_h / scale
+    header_h = title_height(style, scale) / scale
+    menu_h = pixels(MENU_HEIGHT, scale) / scale if menu_items else 0
+    frame = pixels(CLASSIC_FRAME, scale) / scale if style == "classic" else 0
+    dark = desktop["color_scheme"] == "dark"
+    colors = _palette(desktop)
+    body = "#252A33" if dark else "#FAFBFC"
+    foreground = "#F2F4F8" if dark else "#26313F"
+    radius = 0 if style == "classic" else 7
 
     canvas = surface.getCanvas()
     canvas.save()
     canvas.scale(scale, scale)
-
-    colors = _palette(desktop)
-    style = desktop["style"]
-    scheme = desktop["color_scheme"]
-    header_h = title_height(style, scale) / scale
-
-    dark = scheme == "dark"
-
-    radius = {
-        "modern": 11,
-        "aero": 10,
-        "classic": 3,
-    }[style]
-
-    body = "#252A33" if dark else "#FAFBFC"
-    foreground = "#F2F4F8" if dark else "#26313F"
-
     rect = skia.Rect.MakeXYWH(x, y, w, h)
-    outer = skia.RRect.MakeRectXY(
-        rect, radius, radius
-    )
+    outer = skia.RRect.MakeRectXY(rect, radius, radius)
+    shadow = skia.Paint(Color=_color("#000000", 55), AntiAlias=True,
+                        ImageFilter=skia.ImageFilters.Blur(10, 10))
+    canvas.drawRRect(skia.RRect.MakeRectXY(skia.Rect.MakeXYWH(x, y + 5, w, h),
+                                           radius, radius), shadow)
 
-    # 1. Draw a soft outer shadow.
-    shadow_paint = skia.Paint(
-        Color=_color("#000000", 55),
-        AntiAlias=True,
-        ImageFilter=skia.ImageFilters.Blur(10, 10),
-    )
-
-    canvas.drawRRect(
-        skia.RRect.MakeRectXY(
-            skia.Rect.MakeXYWH(x, y + 5, w, h),
-            radius, radius,
-        ),
-        shadow_paint,
-    )
-
-    # 2. Clip the window to its outer rounded shape.
     canvas.save()
     canvas.clipRRect(outer, doAntiAlias=True)
-
-    # Opaque accent-colored shell for Classic windows.
-    # The title bar and inset content will be drawn over it.
+    border_color = "#727C89" if dark else "#9DA7B3"
+    canvas.drawRect(rect, _paint(border_color if style == "classic" else body))
+    title_color = ("#39404A" if dark else "#D9DEE4") if style == "classic" else (
+        "#303640" if dark else "#F1F4F8")
+    canvas.drawRect(skia.Rect.MakeXYWH(x, y, w, header_h), _paint(title_color))
     if style == "classic":
-        canvas.drawRRect(
-            outer,
-            _paint(colors["accent"]),
-        )
+        canvas.drawRect(skia.Rect.MakeXYWH(x, y, w, min(header_h, 3)), _paint(colors["accent"]))
+    canvas.drawRect(skia.Rect.MakeXYWH(x + frame, y + header_h,
+                                       max(0, w - 2 * frame), max(0, h - header_h - frame)),
+                    _paint(body))
 
-    # 3. Title bar. Aero blurs what was already drawn.
-    if style == "aero":
-        frame = pixels(AERO_FRAME, scale) / scale
-
-        # Full glass shell: title bar + side/bottom frame.
-        _glass_panel(
-            surface,
-            (x, y, w, h),
-            radius=8,
-            blur=14,
-            tint="#DCE9F4" if not dark else "#354E68",
-            opacity=135,
-        )
-
-        # Stronger glossy highlight near the top edge.
-        canvas.drawRect(
-            skia.Rect.MakeXYWH(
-                x + 1, y + 1, w - 2, 12
-            ),
-            _paint("#FFFFFF", 42),
-        )
-
-        # Thin bright top edge, flush to the frame.
-        canvas.drawLine(
-            x + 8, y + 1,
-            x + w - 8, y + 1,
-            _paint("#FFFFFF", 125),
-        )
-
-        # Separator between title bar and content region.
-        canvas.drawLine(
-            x + frame,
-            y + TITLE_HEIGHT - 1,
-            x + w - frame,
-            y + TITLE_HEIGHT - 1,
-            _paint("#526A83", 125),
-        )
-
-    elif style == "classic":
-        # Subtle accent-aware gradient for Classic windows.
-        accent = colors["accent"].lstrip("#")
-        r, g, b = (
-            int(accent[i:i + 2], 16)
-            for i in (0, 2, 4)
-        )
-
-        # Slightly brighter at the top, darker at the bottom.
-        top_color = skia.ColorSetRGB(
-            round(r * 0.95 + 255 * 0.05),
-            round(g * 0.95 + 255 * 0.05),
-            round(b * 0.95 + 255 * 0.05),
-        )
-
-        bottom_color = skia.ColorSetRGB(
-            round(r * 0.92),
-            round(g * 0.92),
-            round(b * 0.92),
-        )
-
-        title_shader = skia.GradientShader.MakeLinear(
-            points=[
-                (x, y),
-                (x, y + header_h),
-            ],
-            colors=[
-                top_color,
-                bottom_color,
-            ],
-            positions=[0.0, 1.0],
-            mode=skia.TileMode.kClamp,
-        )
-
-        canvas.drawRect(
-            skia.Rect.MakeXYWH(
-                x, y, w, header_h
-            ),
-            skia.Paint(
-                Shader=title_shader,
-                AntiAlias=True,
-            ),
-        )
-
-        # Very subtle highlight along the top.
-        canvas.drawLine(
-            x + 3, y + 1,
-            x + w - 3, y + 1,
-            _paint("#FFFFFF", 55),
-        )
-
-        foreground = "#FFFFFF"
-
-    else:
-        canvas.drawRect(
-            skia.Rect.MakeXYWH(
-                x, y, w, TITLE_HEIGHT
-            ),
-            _paint(
-                "#303640" if dark else "#F1F4F8"
-            ),
-        )
-
-    # 4. Opaque window body, leaving visible side/bottom borders.
-    frame = (
-        pixels(AERO_FRAME, scale) / scale if style == "aero"
-        else pixels(CLASSIC_FRAME, scale) / scale if style == "classic"
-        else 0
-    )
-
-    canvas.drawRect(
-        skia.Rect.MakeXYWH(
-            x + frame,
-            y + header_h,
-            w - frame * 2,
-            h - header_h - frame,
-        ),
-        _paint(body),
-    )
-
-    # 5. Application title, clipped before controls.
-    controls_left = desktop["shell"] == "dock"
-    title_x = x + (80 if controls_left else 15)
-
-    available_title_width = (
-        w - 95 if controls_left else w - 115
-    )
-
-    canvas.save()
-    canvas.clipRect(
-        skia.Rect.MakeXYWH(
-            title_x, y,
-            max(0, available_title_width),
-            TITLE_HEIGHT,
-        ),
-    )
-
-    _text(
-        canvas,
-        title,
-        title_x,
-        y + header_h / 2 + 5,
-        foreground,
-        14,
-    )
-    canvas.restore()
-
-    _caption_controls(
-        canvas, x, y, w, desktop, foreground
-    )
-
-    # 6. Optional menu bar.
-    menu_height = pixels(MENU_HEIGHT, scale) / scale if menu_items else 0
+    kind, controls, (title_left, title_right) = _caption_layout(w, header_h, style, desktop["shell"])
+    if title_right > title_left:
+        canvas.save()
+        canvas.clipRect(skia.Rect.MakeXYWH(x + title_left, y, title_right - title_left, header_h))
+        _text(canvas, title, x + title_left, y + header_h / 2 + 5, foreground, 14)
+        canvas.restore()
+    _caption_controls(canvas, x, y, kind, controls, foreground, dark)
 
     if menu_items:
         menu_y = y + header_h
+        menu_width = max(0, w - 2 * frame)
+        canvas.drawRect(skia.Rect.MakeXYWH(x + frame, menu_y, menu_width, menu_h),
+                        _paint("#303640" if dark else "#F7F8FA"))
+        if menu_width > 0:
+            canvas.save()
+            canvas.clipRect(skia.Rect.MakeXYWH(x + frame, menu_y, menu_width, menu_h))
+            text_x = x + frame + 8
+            for item in menu_items:
+                if text_x >= x + frame + menu_width:
+                    break
+                _text(canvas, item, text_x, menu_y + menu_h / 2 + 4, foreground, 12)
+                text_x += max(48, len(item) * 8 + 19)
+            canvas.restore()
+    canvas.restore()
 
-        menu_color = (
-            "#303640" if dark else "#F7F8FA"
-        )
+    # Finish all chrome before drawing content, including its border and bevel.
+    canvas.drawRRect(outer, _paint(border_color, 180, stroke=True))
+    if style == "classic" and w > 4 and h > header_h + 4:
+        _line(canvas, x + 1.5, y + header_h, x + 1.5, y + h - 2,
+              "#AAB2BC" if dark else "#FFFFFF", 1)
+    canvas.restore()
 
-        canvas.drawRect(
-            skia.Rect.MakeXYWH(
-                x + frame,
-                menu_y,
-                w - 2 * frame,
-                menu_height,
-            ),
-            _paint(menu_color),
-        )
-
-        text_x = x + 13
-        for item in menu_items:
-            _text(
-                canvas,
-                item,
-                text_x,
-                menu_y + 19,
-                colors["text"],
-                12,
-            )
-            text_x += max(48, len(item) * 8 + 19)
-
-        _line(
-            canvas,
-            x, menu_y + menu_height - 1,
-            x + w, menu_y + menu_height - 1,
-            colors["subtle"],
-            1,
-        )
-
-    # 7. Content origin, shared with measurement and annotations.
-    _, (offset_x, offset_y) = window_geometry(
-        (content_image.width(), content_image.height()), menu_items, style=style, scale=scale)
-    content_x, content_y = physical_x + offset_x, physical_y + offset_y
+    # Use physical, integer-aligned coordinates, outside the rounded chrome clip.
+    # The opaque body supplies the existing backdrop for transparent content.
     canvas.save()
     canvas.resetMatrix()
+    canvas.drawRect(skia.Rect.MakeXYWH(content_x, content_y,
+                                       content_image.width(), content_image.height()), _paint(body))
     canvas.drawImage(content_image, content_x, content_y)
     canvas.restore()
 
-    canvas.restore()
-
-    # 8. Thin outer frame.
-    canvas.drawRRect(
-        outer,
-        _paint(
-            "#34465D" if style == "classic"
-            else colors["subtle"],
-            160,
-            stroke=True,
-        ),
-    )
-
-    if style == "classic":
-        # Beveled highlight along the exposed colored frame.
-        canvas.drawLine(
-            x + 1.5,
-            y + header_h,
-            x + 1.5,
-            y + h - 4,
-            _paint("#FFFFFF", 95),
-        )
-
-        canvas.drawLine(
-            x + 2,
-            y + h - 2,
-            x + w - 2,
-            y + h - 2,
-            _paint("#FFFFFF", 65),
-        )
-
-    if style == "aero":
-        inner = skia.RRect.MakeRectXY(
-            skia.Rect.MakeXYWH(
-                x + 1, y + 1,
-                w - 2, h - 2,
-            ),
-            radius - 1,
-            radius - 1,
-        )
-
-        canvas.drawRRect(
-            inner,
-            _paint(
-                "#FFFFFF",
-                55,
-                stroke=True,
-            ),
-        )
-
-    canvas.restore()
-
-    # 9. Translate content-local boxes exactly once.
-    return {
-        name: (
-            x0 + content_x,
-            y0 + content_y,
-            x1 + content_x,
-            y1 + content_y,
-        )
-        for name, (x0, y0, x1, y1) in content_boxes.items()
-    }
+    return {name: (x0 + content_x, y0 + content_y, x1 + content_x, y1 + content_y)
+            for name, (x0, y0, x1, y1) in content_boxes.items()}

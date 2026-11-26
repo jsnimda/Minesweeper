@@ -231,3 +231,51 @@ def test_desktop_fitting_preserves_scales_and_original_size(monkeypatch, tmp_pat
     assert board['sampled_cell_size'] == board['requested_cell_size'] == 90
     assert board['resolved_cell_size'] < 90
     assert board['requested_zoom'] == 1.25 and board['requested_display_scale'] == 1.5
+
+
+def test_desktop_style_policy_and_valid_requests():
+    config = sampler.SAMPLING_CONFIG
+    assert config['style'] == {'modern': 75, 'classic': 25}
+    assert config['shell'] == {'taskbar': 60, 'dock': 25, 'top_panel': 15}
+    assert config['shell_styles'] == {
+        'taskbar': ('modern', 'classic'), 'dock': ('modern',), 'top_panel': ('modern',),
+    }
+    assert 'taskbar_layout' not in config
+    for seed in range(100):
+        desktop = sampler.sample_desktop(random.Random(seed))
+        assert desktop['style'] in config['shell_styles'][desktop['shell']]
+        assert 'taskbar_layout' not in desktop
+        request = _desktop()
+        request['desktop'] = desktop
+        SceneSpec.model_validate(request)
+        assert desktop == sampler.sample_desktop(random.Random(seed))
+
+
+def test_dock_visibility_precheck_matches_rendered_placement(monkeypatch):
+    import synthetic_scenes.render as rendering
+
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'scene_mode', {'desktop': 1})
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'game_count', {1: 1})
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'board_size',
+                        {'small': {'weight': 1, 'size': (5, 5), 'mines': 3}})
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'cell_size', {'small': {'weight': 1, 'range': (12, 12)}})
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'resolution', {'fixed': {'weight': 1, 'options': [(640, 480)]}})
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'cleanliness', {'minimal': 1})
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'wallpaper_type', {'procedural': 1})
+    monkeypatch.setattr(sampler, 'sample_desktop', lambda rng: {
+        'shell': 'dock', 'style': 'modern', 'color_scheme': 'light',
+        'show_dock': False, 'show_status_bar': True, 'dock_height': 120})
+    plans = []
+    original = rendering.plan_game_windows
+
+    def capture(*args, **kwargs):
+        result = original(*args, **kwargs)
+        plans.append(result)
+        return result
+
+    monkeypatch.setattr(sampler, 'plan_game_windows', capture)
+    monkeypatch.setattr(rendering, 'plan_game_windows', capture)
+    request = sampler.sample_scene(7)
+    _, _, annotations = render_scene(request, wallpaper_assets={})
+    assert plans[0] == plans[1]
+    assert annotations['boards'][0]['window_box'] == plans[0][0]['box']

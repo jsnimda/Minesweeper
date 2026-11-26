@@ -14,21 +14,20 @@ from synthetic_scenes.image_conversion import image_to_pillow
 
 
 SCALES = (1.0, 1.25, 1.5, 2.0)
-STYLES = ("modern", "classic", "aero")
+STYLES = ("modern", "classic")
 
 
-def desktop(style, shell, layout="centered"):
+def desktop(style, shell):
     return {"style": style, "shell": shell, "color_scheme": "light",
-            "accent_color": "#4476BE", "taskbar_layout": layout}
+            "accent_color": "#4476BE"}
 
 
 @pytest.mark.parametrize("scale", SCALES)
 @pytest.mark.parametrize("style", STYLES)
-@pytest.mark.parametrize("shell,layout", [("taskbar", "centered"), ("taskbar", "left"),
-                                          ("dock", "centered"), ("top_panel", "centered")])
-def test_desktop_component_geometry_and_surface(scale, style, shell, layout):
+@pytest.mark.parametrize("shell", ["taskbar", "dock", "top_panel"])
+def test_desktop_component_geometry_and_surface(scale, style, shell):
     size = (1600, 1000)
-    config = desktop(style, shell, layout)
+    config = desktop(style, shell)
     boxes = component_geometry(size, config, scale)
     if shell == "taskbar":
         box = boxes["taskbar"]
@@ -38,8 +37,8 @@ def test_desktop_component_geometry_and_surface(scale, style, shell, layout):
     else:
         assert boxes["status_bar"] == (0, 0, size[0], pixels(32, scale))
         x0, y0, x1, y1 = boxes["dock"]
-        assert (x1 - x0, y1 - y0) == (pixels(344, scale), pixels(74, scale))
-        assert size[1] - y1 == pixels(16, scale)
+        assert (x1 - x0, y1 - y0) == (6 * pixels(42, scale) + 5 * pixels(12, scale) + 2 * pixels(16, scale), pixels(74, scale))
+        assert size[1] - y1 == pixels(4, scale)
     wallpaper = skia.Surface(*size).makeImageSnapshot()
     surface = skia.Surface(*size)
     draw_desktop(surface, wallpaper, size, config, scale=scale)
@@ -89,8 +88,8 @@ def test_applications_scale_once(scale, name):
     assert (result.width(), result.height()) == (pixels(base.width(), scale), pixels(base.height(), scale))
     if scale == 1:
         assert image_to_pillow(result).tobytes() == image_to_pillow(base).tobytes()
-    wrapped, _ = window_geometry((result.width(), result.height()), style="aero", scale=scale)
-    assert wrapped[0] - result.width() == 2 * (pixels(6, scale) + pixels(1, scale))
+    wrapped, _ = window_geometry((result.width(), result.height()), style="classic", scale=scale)
+    assert wrapped[0] - result.width() == 2 * (pixels(4, scale) + pixels(1, scale))
 
 
 @pytest.mark.parametrize("scale", [0, -1, float("inf"), float("nan"), True])
@@ -99,3 +98,31 @@ def test_invalid_scales_are_rejected(scale):
         window_geometry((200, 200), scale=scale)
     with pytest.raises(ValueError):
         component_geometry((800, 600), desktop("modern", "taskbar"), scale)
+
+
+def test_modern_dock_glass_depends_on_backdrop():
+    from synthetic_scenes.desktop_rendering.desktop_components.primitives import _glass_panel
+
+    results = []
+    for color in (skia.ColorRED, skia.ColorBLUE):
+        surface = skia.Surface(120, 80)
+        surface.getCanvas().clear(color)
+        _glass_panel(surface, (10, 10, 100, 60), radius=8, blur=4,
+                     tint='#F4F6F9', opacity=100)
+        results.append(image_to_pillow(surface.makeImageSnapshot()).convert('RGB').getpixel((60, 40)))
+    assert results[0] != results[1]
+
+
+@pytest.mark.parametrize('scale', SCALES)
+@pytest.mark.parametrize('style,frame,title', [('modern', 0, 40), ('classic', 4, 32)])
+@pytest.mark.parametrize('menu', [(), ('File', 'Edit')])
+def test_retained_frame_dimensions_and_offsets(scale, style, frame, title, menu):
+    content = (320, 240)
+    physical_frame = pixels(frame, scale) if frame else 0
+    padding = pixels(1, scale)
+    header = pixels(title, scale)
+    menu_height = pixels(28, scale) if menu else 0
+    size, origin = window_geometry(content, menu, style=style, scale=scale)
+    assert origin == (physical_frame + padding, header + menu_height + padding)
+    assert size == (content[0] + 2 * (physical_frame + padding),
+                    content[1] + header + menu_height + 2 * padding + physical_frame)

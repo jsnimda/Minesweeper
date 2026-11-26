@@ -33,21 +33,20 @@ def _work_area(
 ) -> Box:
     """Conservative window placement area for each shell."""
     w, h = size
-    shell = desktop["shell"]
     geometry = component_geometry(size, desktop, scale)
 
-    if shell == "taskbar":
-        extra = pixels(8, scale) if desktop["style"] == "classic" else 0
-        return (0, 0, w, geometry['taskbar'][1] - extra)
+    top, bottom = 0, h
+    if 'taskbar' in geometry:
+        extra = pixels(8, scale) if desktop['style'] == 'classic' else 0
+        bottom = geometry['taskbar'][1] - extra
+    if 'status_bar' in geometry:
+        top = geometry['status_bar'][3]
+    if 'dock' in geometry:
+        bottom = geometry['dock'][1]
+    if 'top_panel' in geometry:
+        top = geometry['top_panel'][3]
+    return (0, top, w, bottom)
 
-    if shell == "dock":
-        # Top menu bar and floating bottom dock.
-        return (0, geometry['status_bar'][3], w, geometry['dock'][1] - pixels(14, scale))
-
-    if shell == "top_panel":
-        return (0, geometry['top_panel'][3], w, h)
-
-    raise ValueError(f"Unknown shell: {shell}")
 
 
 def compose_screenshot(

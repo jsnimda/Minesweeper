@@ -1,12 +1,11 @@
-"""Linux-style top panel renderer for synthetic desktops."""
+"""Traditional desktop top panel."""
 
 import skia
 
 from ..scaling import validate_scale
 from .geometry import component_geometry
-
-from .primitives import _color, _edge_panel, _paint, _round_rect, _text
-from .system_icons import draw_wifi, draw_volume, draw_battery
+from .panel_content import draw_panel_content
+from .primitives import _edge_panel
 
 
 def _draw_top_panel(surface, size, desktop, colors, scale=1.0):
@@ -14,77 +13,9 @@ def _draw_top_panel(surface, size, desktop, colors, scale=1.0):
     canvas = surface.getCanvas()
     canvas.save()
     canvas.scale(scale, scale)
-    geometry = component_geometry(size, desktop, scale)
-    size = (size[0] / scale, size[1] / scale)
-    w, _ = size
-    height = geometry["top_panel"][3] / scale
-
-    _edge_panel(
-        surface, (0, 0, w, height), desktop, colors
-    )
-
-    text_color = colors["text"]
-    center_y = height / 2
-
-    # Left: Activities and workspace.
-    _round_rect(
-        canvas, 14, 11, 4, 14,
-        2, colors["accent"],
-    )
-
-    _text(
-        canvas, "Activities",
-        26, 24, text_color, 13,
-    )
-
-    _text(
-        canvas, "Workspace 1",
-        125, 24, text_color, 12,
-    )
-
-    # Shared stroke style for system indicators.
-    stroke = skia.Paint(
-        Color=_color(text_color),
-        AntiAlias=True,
-        Style=skia.Paint.kStroke_Style,
-        StrokeWidth=1.7,
-        StrokeCap=skia.Paint.kRound_Cap,
-        StrokeJoin=skia.Paint.kRound_Join,
-    )
-
-    # Right: shared Wi-Fi indicator.
-    draw_wifi(
-        canvas,
-        w - 157,
-        center_y,
-        color=text_color,
-        size=20,
-    )
-
-    # Shared volume indicator.
-    draw_volume(
-        canvas,
-        w - 124,
-        center_y,
-        color=text_color,
-        size=20,
-    )
-
-    # Shared battery indicator.
-    draw_battery(
-        canvas,
-        w - 87,
-        center_y,
-        color=text_color,
-        size=20,
-        charge=0.75,
-    )
-
-    # Clock.
-    _text(
-        canvas,
-        desktop.get("clock_time", "12:34"),
-        w - 60, 24, text_color, 13,
-    )
-
+    width, screen_height = size[0] / scale, size[1] / scale
+    height = component_geometry(size, desktop, scale)['top_panel'][3] / scale
+    canvas.clipRect(skia.Rect.MakeXYWH(0, 0, width, screen_height))
+    _edge_panel(surface, (0, 0, width, height), desktop, colors)
+    draw_panel_content(canvas, width, height, desktop, colors, workspace=True)
     canvas.restore()

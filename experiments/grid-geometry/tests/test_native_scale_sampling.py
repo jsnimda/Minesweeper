@@ -238,3 +238,25 @@ def test_context_desktop_remains_neutral(monkeypatch, tmp_path):
     record = generator._generate_one(_task(tmp_path, config))
     assert record['background_visible'] and len(requests) == 2
     assert requests[1]['screen']['scale'] == 1.0
+
+
+def test_desktop_style_policy_and_valid_sources(monkeypatch):
+    original = sampler._choice
+    sampled_weights = []
+
+    def capture(rng, weights):
+        sampled_weights.append(weights)
+        return original(rng, weights)
+
+    monkeypatch.setattr(sampler, '_choice', capture)
+    for seed in range(100):
+        desktop = sampler._desktop(random.Random(seed))
+        assert desktop['shell'] == 'taskbar'
+        assert desktop['style'] in {'modern', 'classic'}
+        assert 'taskbar_layout' not in desktop
+        request = {'mode': 'desktop', 'seed': seed, 'windows': [],
+                   'screen': {'width': 800, 'height': 600}, 'desktop': desktop,
+                   'wallpaper': {'category': 'procedural', 'seed': seed}}
+        SceneSpec.model_validate(request)
+        assert desktop == sampler._desktop(random.Random(seed))
+    assert all(weights == {'modern': 75, 'classic': 25} for weights in sampled_weights)

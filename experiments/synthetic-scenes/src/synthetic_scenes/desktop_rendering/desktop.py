@@ -10,6 +10,7 @@ from PIL import Image, ImageOps
 
 from ..image_conversion import image_to_pillow, pillow_to_image
 
+from .desktop_components.geometry import component_geometry
 from .desktop_components.dock import _draw_dock
 from .desktop_components.taskbar import _draw_taskbar
 from .desktop_components.top_panel import _draw_top_panel
@@ -27,7 +28,7 @@ def _palette(desktop: dict) -> dict:
             "surface": "#D5D7DC",
             "text": "#253044",
             "subtle": "#EEF0F3",
-            "accent": desktop["accent_color"] or "#4476BE",
+            "accent": desktop.get("accent_color") or "#4476BE",
             "alpha": 250,
             "radius": 4,
         }
@@ -37,8 +38,8 @@ def _palette(desktop: dict) -> dict:
             "surface": "#20242D",
             "text": "#F4F6FA",
             "subtle": "#404754",
-            "accent": desktop["accent_color"] or "#639DE2",
-            "alpha": 220 if style == "modern" else 185,
+            "accent": desktop.get("accent_color") or "#639DE2",
+            "alpha": 220,
             "radius": 16,
         }
 
@@ -46,10 +47,18 @@ def _palette(desktop: dict) -> dict:
         "surface": "#F4F6F9",
         "text": "#202A38",
         "subtle": "#DCE3EB",
-        "accent": desktop["accent_color"] or "#477FC0",
-        "alpha": 230 if style == "modern" else 185,
+        "accent": desktop.get("accent_color") or "#477FC0",
+        "alpha": 230,
         "radius": 16,
     }
+
+
+def _component_palette(desktop: dict) -> dict:
+    """Keep component colors independent from external window decorations."""
+    colors = _palette(desktop)
+    if desktop["style"] == "classic" and desktop["color_scheme"] == "dark":
+        colors.update(surface="#30343B", text="#F1F2F4", subtle="#8993A0")
+    return colors
 
 
 def draw_desktop(
@@ -89,13 +98,14 @@ def draw_desktop_components(
     if shell not in {"taskbar", "dock", "top_panel"}:
         raise ValueError(f"Unsupported shell: {shell}")
 
-    colors = _palette(desktop)
+    colors = _component_palette(desktop)
+    geometry = component_geometry(size, desktop, scale)
 
-    if shell == "taskbar":
+    if shell == "taskbar" and "taskbar" in geometry:
         _draw_taskbar(surface, size, desktop, colors, scale=scale)
-    elif shell == "dock":
+    elif shell == "dock" and geometry:
         _draw_dock(surface, size, desktop, colors, scale=scale)
-    else:
+    elif shell == "top_panel" and "top_panel" in geometry:
         _draw_top_panel(surface, size, desktop, colors, scale=scale)
 
 

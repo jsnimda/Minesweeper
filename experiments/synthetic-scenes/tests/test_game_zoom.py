@@ -24,7 +24,7 @@ def scene(mode, style='classic', zoom=1.0, cell=20):
     }}]}
     if mode == 'desktop':
         result.update(screen={'width': 640, 'height': 480},
-                      desktop={'shell': 'taskbar', 'style': 'aero', 'color_scheme': 'light'},
+                      desktop={'shell': 'taskbar', 'style': 'modern', 'color_scheme': 'light'},
                       wallpaper={'category': 'procedural', 'seed': 2})
     return result
 
@@ -106,7 +106,7 @@ def test_scene_zoom_annotations_and_requested_spec(style, mode):
         layout = resolved['layout'][0]
         x, y, r, b = layout['box']
         content = measure_game_region(4, 5, style, 20, 1.5)
-        window, offset = window_geometry(content, style='aero')
+        window, offset = window_geometry(content, style='modern')
         assert (r-x, b-y) == window
         assert board['boxes']['game_region'] == (x+offset[0], y+offset[1], x+offset[0]+content[0], y+offset[1]+content[1])
         assert image.size == (640, 480)
@@ -115,7 +115,7 @@ def test_scene_zoom_annotations_and_requested_spec(style, mode):
 def test_desktop_fits_by_reducing_base_cell_and_keeps_zoom():
     request = scene('desktop', zoom=2.0, cell=64)
     minimum_content = measure_game_region(4, 5, 'classic', 12, 2.0)
-    minimum_window, _ = window_geometry(minimum_content, style='aero')
+    minimum_window, _ = window_geometry(minimum_content, style='modern')
     request['screen'] = {'width': minimum_window[0], 'height': minimum_window[1] + 48}
     original = deepcopy(request)
     _, resolved, annotations = render_scene(request, details=['scene'])

@@ -23,8 +23,8 @@ def desktop_scene(windows=None):
     if windows is not None:
         scene['windows'] = windows
     scene.update(screen={'width': 640, 'height': 480},
-                 desktop={'shell': 'taskbar', 'style': 'aero', 'color_scheme': 'light',
-                          'taskbar_layout': None, 'accent_color': None},
+                 desktop={'shell': 'taskbar', 'style': 'modern', 'color_scheme': 'light',
+                          'accent_color': None},
                  wallpaper={'category': 'procedural', 'seed': 3, 'subtype': None})
     return scene
 
@@ -123,7 +123,7 @@ def test_requested_scene_is_not_changed_and_layout_is_separate():
     assert layout['cell_size'] < 64
     left, top, right, bottom = layout['box']
     assert 0 <= left < right <= 320
-    assert 0 <= top < bottom <= 269  # 317 pixels less the Aero taskbar.
+    assert 0 <= top < bottom <= 269  # 317 pixels less the modern taskbar.
 
 
 @pytest.mark.parametrize('style', ['classic', 'windows7', 'microsoft', 'google'])
@@ -140,7 +140,7 @@ def test_desktop_window_uses_complete_game_size(style):
     board = annotations['boards'][0]
     x, y, r, b = placement['box']
     size = measure_game_region(2, 3, style, 8)
-    window, (ox, oy) = window_geometry(size, style='aero')
+    window, (ox, oy) = window_geometry(size, style='modern')
     assert (r-x, b-y) == window
     assert board['window_box'] == placement['box']
     assert board['boxes']['game_region'] == (x+ox, y+oy, x+ox+size[0], y+oy+size[1])
@@ -219,3 +219,34 @@ def test_appearance_style_default_works_for_desktop_planning():
     _, resolved, annotations = render_scene(scene, details=['scene'])
     assert annotations['boards'][0]['style'] == 'classic'
     assert 'style' not in resolved['windows'][0]['content']['appearance']
+
+
+@pytest.mark.parametrize('shell', ['taskbar', 'dock', 'top_panel'])
+@pytest.mark.parametrize('style', ['modern', 'classic'])
+def test_retained_desktop_options_and_omitted_accent(shell, style):
+    scene = desktop_scene([])
+    scene['desktop'].update(shell=shell, style=style)
+    del scene['desktop']['accent_color']
+    original = deepcopy(scene)
+    model = SceneSpec.model_validate(scene)
+    assert model.desktop.accent_color is None
+    image, _, _ = render_scene(scene)
+    explicit = deepcopy(scene)
+    explicit['desktop']['accent_color'] = None
+    expected, _, _ = render_scene(explicit)
+    assert image.tobytes() == expected.tobytes()
+    assert scene == original
+
+
+@pytest.mark.parametrize('field,value', [
+    ('style', 'aero'), ('taskbar_layout', 'left'),
+    ('taskbar_layout', 'centered'), ('taskbar_layout', None),
+    ('taskbar_layout', ''), ('taskbar_layout', 'other'),
+])
+def test_retired_desktop_options_are_rejected(field, value):
+    scene = desktop_scene([])
+    scene['desktop'][field] = value
+    with pytest.raises(ValidationError):
+        SceneSpec.model_validate(scene)
+    with pytest.raises(ValidationError):
+        render_scene(scene)

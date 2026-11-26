@@ -96,23 +96,10 @@ def _edge_panel(
     x, y, w, h = rect
     style = desktop["style"]
 
-    if style == "aero":
-        _glass_panel(
-            surface,
-            rect,
-            radius=0,
-            blur=12,
-            tint=colors["surface"],
-            opacity=145,
-        )
-    else:
-        canvas.drawRect(
-            skia.Rect.MakeXYWH(x, y, w, h),
-            _paint(
-                colors["surface"],
-                255 if style == "classic" else 225,
-            ),
-        )
+    canvas.drawRect(
+        skia.Rect.MakeXYWH(x, y, w, h),
+        _paint(colors["surface"], 255 if style == "classic" else 225),
+    )
 
     # Classic omits the extra separating line.
     if style != "classic":

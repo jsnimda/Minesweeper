@@ -111,3 +111,33 @@ def test_dataset_export_is_independent_of_other_tasks(tmp_path, task):
         assert full_files
         for relative in full_files:
             assert (full/relative).read_bytes() == (single/relative).read_bytes(), relative
+
+
+@pytest.mark.parametrize('chrome', ['none', 'classic', 'modern', 'browser'])
+def test_legacy_retained_chrome_measurement(chrome):
+    from PIL import Image
+    from synthetic_scenes.desktop import chrome_size, content_origin, wrap_window
+
+    content = Image.new('RGB', (160, 100), 'red')
+    window = wrap_window(content, chrome)
+    assert window.size == chrome_size(content.size, chrome)
+    x, y = content_origin(chrome)
+    assert window.crop((x, y, x + content.width, y + content.height)).tobytes() == content.tobytes()
+
+
+def test_legacy_windows7_defaults_to_modern_and_rejects_aero():
+    from synthetic_scenes.desktop import chrome_size, content_origin, wrap_window
+    from synthetic_scenes.scene import DEFAULT_CHROME
+    from PIL import Image
+
+    assert DEFAULT_CHROME['windows7'] == 'modern'
+    spec = GameSpec(rows=2, columns=3, mine_count=0, status='new',
+                    appearance={'style': 'windows7', 'cell_size': 12})
+    _, metadata = render_scene([spec], size=(640, 480), background_count=0)
+    assert metadata['boards'][0]['chrome'] == 'modern'
+    for operation in (lambda: chrome_size((160, 100), 'aero'),
+                      lambda: content_origin('aero'),
+                      lambda: wrap_window(Image.new('RGB', (160, 100)), 'aero'),
+                      lambda: render_scene([GameSpec(chrome='aero')], background_count=0)):
+        with pytest.raises(KeyError):
+            operation()

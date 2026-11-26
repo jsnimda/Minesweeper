@@ -35,7 +35,7 @@ class GameSpec:
         )
 
 
-DEFAULT_CHROME = {'classic': 'classic', 'windows7': 'aero', 'microsoft': 'modern', 'google': 'browser'}
+DEFAULT_CHROME = {'classic': 'classic', 'windows7': 'modern', 'microsoft': 'modern', 'google': 'browser'}
 
 
 def _measure(spec, mode, cell_size):

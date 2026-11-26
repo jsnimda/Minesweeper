@@ -70,9 +70,9 @@ def _game(rng, category, pitch, size, *, coverage_exploration_fraction=.12,
 
 
 def _desktop(rng):
-    style = _choice(rng, {'modern': 75, 'aero': 15, 'classic': 10})
+    style = _choice(rng, {'modern': 75, 'classic': 25})
     return {'shell': 'taskbar', 'style': style, 'color_scheme': 'default' if style == 'classic' else rng.choice(('light', 'dark')),
-            'taskbar_layout': rng.choice(('left', 'centered')), 'accent_color': None,
+            'accent_color': None,
             'clock_time': '10:08', 'clock_date': '2025/06/12'}
 
 

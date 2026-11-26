@@ -15,26 +15,19 @@ SAMPLING_CONFIG = {
     },
     "style": {
         "modern": 75,
-        "aero": 15,
-        "classic": 10,
+        "classic": 25,
     },
     "shell_styles": {
-        "taskbar": ("modern", "aero", "classic"),
+        "taskbar": ("modern", "classic"),
         "dock": ("modern",),
         "top_panel": ("modern",),
     },
-    "taskbar_layout": {
-        "centered": 60,
-        "left": 40,
-    },
     "color_scheme": {
         "modern": {"light": 55, "dark": 45},
-        "aero": {"light": 80, "dark": 20},
         "classic": {"default": 100},
     },
     "custom_accent": {
         "modern": {True: 70, False: 30},
-        "aero": {True: 35, False: 65},
         "classic": {True: 10, False: 90},
     },
 

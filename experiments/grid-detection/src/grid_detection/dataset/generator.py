@@ -18,7 +18,7 @@ from .sampler import sample_scene
 from .sampling_config import SAMPLING_CONFIG
 from .yolo import YOLO_CLASSES, write_yolo_config, yolo_lines
 
-GENERATOR_REVISION = 5  # Native scale sampling and compact board metadata.
+GENERATOR_REVISION = 6  # Stage C desktop rendering and sampling.
 _worker_assets = None
 _worker_exclusion_path = None
 _worker_excluded = frozenset()
