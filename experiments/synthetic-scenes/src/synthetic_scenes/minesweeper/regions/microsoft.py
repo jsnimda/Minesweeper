@@ -3,21 +3,24 @@ from ..controls import icon_number
 from ..drawing import color, font_for, gradient, rect, text
 from . import box, digit_slots
 
+UI_REFERENCE = 24
+
 
 def layout(grid_size, cell_size):
     gw,gh = grid_size
-    s = cell_size
+    s = UI_REFERENCE
     pad = max(5,round(.38*s))
     header = max(32,round(1.8*s))
     ch = max(17,round(header*.52))
     gap = max(5,round(.3*s))
-    slots = digit_slots(grid_size,s,max(1,round(s*.09)))
+    slots = digit_slots(grid_size,cell_size,max(1,round(cell_size*.09)))
     cw = ch+round(ch*.4*slots)
-    width = max(gw+2*pad,2*cw+3*gap)
+    minimum_width = 2*cw+3*gap
+    width = max(gw+2*pad,minimum_width)
     gx = (width-gw)//2
     gy = header+pad
     y = (header-ch)//2
-    return {'size': (width,gy+gh+pad), 'grid_origin': (gx,gy), 'header': header,
+    return {'size': (width,gy+gh+pad), 'grid_origin': (gx,gy), 'header': header, 'minimum_width': minimum_width,
             'mine_counter': box(gap,y,cw,ch), 'timer': box(width-gap-cw,y,cw,ch)}
 
 

@@ -37,15 +37,15 @@ def test_plan():
 def test_plan_reaches_configured_minimum_on_small_desktop():
     appearance = {'style': 'classic', 'cell_size': 40}
     spec = GameSpec(rows=8, appearance=appearance)
-    assert _measure(spec, 'desktop', 12)[0] == (126, 190)
+    assert _measure(spec, 'desktop', 12)[0] == (183, 234)
     for attempts in (1, 60):
-        plan = plan_windows([spec], (240, 230), random.Random(1),
+        plan = plan_windows([spec], (240, 274), random.Random(1),
                             min_cell_size=12, attempts=attempts)
         assert plan[0]['cell_size'] == 12
         _, top, _, bottom = plan[0]['box']
-        assert (top, bottom) == (0, 190)
+        assert (top, bottom) == (0, 234)
     with pytest.raises(ValueError, match='Could not fit all games'):
-        plan_windows([GameSpec(appearance=appearance)], (240, 230), random.Random(1))
+        plan_windows([GameSpec(appearance=appearance)], (240, 274), random.Random(1))
 
 
 def test_transform_and_augment():

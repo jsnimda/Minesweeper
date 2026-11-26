@@ -101,7 +101,7 @@ def test_style_specific_options(style, theme):
 
 def test_requested_scene_is_not_changed_and_layout_is_separate():
     scene = desktop_scene()
-    scene['screen'].update(width=320, height=244)
+    scene['screen'].update(width=320, height=317)
     scene['windows'][0]['content']['appearance']['cell_size'] = 64
     original = deepcopy(scene)
     _, resolved, _ = render_scene(scene, details=['scene'])
@@ -112,7 +112,37 @@ def test_requested_scene_is_not_changed_and_layout_is_separate():
     assert layout['cell_size'] < 64
     left, top, right, bottom = layout['box']
     assert 0 <= left < right <= 320
-    assert 0 <= top < bottom <= 196  # 244 pixels less the Aero taskbar.
+    assert 0 <= top < bottom <= 269  # 317 pixels less the Aero taskbar.
+
+
+@pytest.mark.parametrize('style', ['classic', 'windows7', 'microsoft', 'google'])
+def test_desktop_window_uses_complete_game_size(style):
+    from synthetic_scenes.desktop_rendering.generic_window import window_geometry
+    from synthetic_scenes.minesweeper.geometry import measure_game_region, measure_grid, region_layout
+
+    scene = desktop_scene()
+    content = scene['windows'][0]['content']
+    content.update(rows=2, columns=3, mine_count=0,
+                   appearance={'style': style, 'cell_size': 8})
+    _, resolved, annotations = render_scene(scene, details=['scene', 'cell'])
+    placement = resolved['layout'][0]
+    board = annotations['boards'][0]
+    x, y, r, b = placement['box']
+    size = measure_game_region(2, 3, style, 8)
+    window, (ox, oy) = window_geometry(size, style='aero')
+    assert (r-x, b-y) == window
+    assert board['window_box'] == placement['box']
+    assert board['boxes']['game_region'] == (x+ox, y+oy, x+ox+size[0], y+oy+size[1])
+    layout = region_layout(measure_grid(2, 3, style, 8), style, 8)
+    for name in ('grid', 'mine_counter', 'timer'):
+        if name == 'grid':
+            gx, gy = layout['grid_origin']
+            width, height = measure_grid(2, 3, style, 8)
+            local = (gx, gy, gx+width, gy+height)
+        else:
+            local = layout[name]
+        assert board['boxes'][name] == (local[0]+x+ox, local[1]+y+oy,
+                                        local[2]+x+ox, local[3]+y+oy)
 
 
 def test_placement_failure_is_distinct_from_invalid_input():

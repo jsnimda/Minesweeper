@@ -4,11 +4,14 @@ from ..drawing import color
 from ..styles.classic import THEMES
 from . import box
 
+UI_REFERENCE = 24
+
 
 def layout(grid_size, cell_size):
     gw, gh = grid_size
-    s = cell_size
-    slots = max(3, len(str((gw//s)*(gh//s))))
+    s = UI_REFERENCE
+    # The sign has its own area in the LED display.
+    slots = max(3, len(str((gw//cell_size)*(gh//cell_size))))
     edge = max(2, round(.18*s))
     space = max(3, round(.28*s))
     h = max(16, round(1.05*s))
@@ -16,14 +19,15 @@ def layout(grid_size, cell_size):
     cw = slots*digit_width + round(digit_width*.65) + 2*max(1, round(h*.06))
     timer_w = 3*digit_width + 2*max(1, round(h*.06))
     reset_size = max(16, round(1.55*s))
-    width = max(gw+2*(edge+space), 2*cw+reset_size+4*space+2*edge)
+    minimum_width = 2*cw+reset_size+4*space+2*edge
+    width = max(gw+2*(edge+space), minimum_width)
     header_y = edge+space
     header_h = reset_size+2*space
     gy = header_y+header_h+space+edge
     height = gy+gh+space+edge
     cy = header_y+space+(reset_size-h)//2
     gx = (width-gw)//2
-    return {'size': (width,height), 'grid_origin': (gx,gy), 'slots': slots,
+    return {'size': (width,height), 'grid_origin': (gx,gy), 'slots': slots, 'minimum_width': minimum_width,
             'edge': edge, 'header_box': box(edge,header_y-space//2,width-2*edge,header_h+space),
             'mine_counter': box(edge+space,cy,cw,h),
             'timer': box(width-edge-space-timer_w,cy,timer_w,h),

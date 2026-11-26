@@ -17,6 +17,23 @@ def test_measured_region(style):
     assert image.size==measure_game_region(9,9,style,24)
 
 
+@pytest.mark.parametrize('style', STYLES)
+def test_legacy_window_placement_uses_complete_game_size(style):
+    from synthetic_scenes.desktop import chrome_size, content_origin
+    from synthetic_scenes.scene import DEFAULT_CHROME
+
+    spec = GameSpec(rows=2, columns=3, mine_count=0, status='new',
+                    appearance={'style': style, 'cell_size': 8})
+    _, meta = render_scene([spec], size=(640, 480), seed=4, background_count=0)
+    board = meta['boards'][0]
+    x, y, r, b = board['window_box']
+    chrome = DEFAULT_CHROME[style]
+    size = measure_game_region(2, 3, style, 8)
+    assert (r-x, b-y) == chrome_size(size, chrome)
+    ox, oy = content_origin(chrome)
+    assert board['boxes']['game_region'] == (x+ox, y+oy, x+ox+size[0], y+oy+size[1])
+
+
 def test_scene():
     specs=[GameSpec(seed=i,appearance={'style':style,'cell_size':24})
            for i,style in enumerate(('classic','google'))]
