@@ -4,6 +4,7 @@ Run with synthetic-scenes available in the generation environment. Rendering
 imports are lazy; loading exported samples does not depend on synthetic-scenes.
 """
 from collections import Counter, deque
+from copy import deepcopy
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
 from dataclasses import asdict
@@ -21,8 +22,20 @@ from PIL import Image
 from .targets import PhaseGeometry
 
 
-from .sampling_config import CATEGORIES, GenerationConfig
+from .sampling_config import CATEGORIES, GenerationConfig, SOURCE_CELL_SIZE, STYLES, THEMES
+from . import sampler as source_sampler
 from .sampler import _choice, _game, _desktop, _scene
+
+GENERATOR_REVISION = 1
+STANDALONE_MINIMUM_CELL_SIZE = 12
+NEGATIVE_KINDS = ('negative', 'hard_negative')
+RESAMPLING_METHODS = (Image.Resampling.BILINEAR, Image.Resampling.BICUBIC)
+BLUR_CHOICES = (0., 0., 0., .25, .5)
+PHOTOMETRIC_RANGE = (.95, 1.05)
+PADDING_TYPES = ('black', 'dark', 'light', 'random')
+PADDING_WEIGHTS = (5, 2, 2, 1)
+FILL_APPLICATIONS = ('browser', 'spreadsheet', 'sudoku', 'other_puzzle')
+FILL_DISPLAY_SCALE = 1.0
 
 
 def _crop_axis(rng, low, high, span, mode, edge=None, source_length=None, prefer_source=False):
@@ -85,7 +98,7 @@ def _fit_standalone_game(game, budget):
 
     appearance = game['appearance']
     requested = appearance['cell_size']
-    for cell_size in range(requested, min(12, requested) - 1, -1):
+    for cell_size in range(requested, min(STANDALONE_MINIMUM_CELL_SIZE, requested) - 1, -1):
         try:
             width, height = measure_game_region(
                 game['rows'], game['columns'], appearance['style'], cell_size, appearance['zoom']
@@ -164,6 +177,49 @@ def _write_json(path, value):
     Path(path).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
 
 
+def _source_policy(config):
+    """Describe source-defined choices alongside the configurable dataclass."""
+    from synthetic_scenes.wallpaper import PROCEDURAL_SUBTYPE_WEIGHTS
+    return {
+        'positive_fraction': 1 - config.negative_fraction,
+        'negative_kinds_uniform': NEGATIVE_KINDS,
+        'source_cell_size': SOURCE_CELL_SIZE,
+        'large_board_cell_threshold': source_sampler.LARGE_BOARD_CELL_THRESHOLD,
+        'desktop_board_area_limit': source_sampler.DESKTOP_BOARD_AREA_LIMIT,
+        'source_desktop_size': source_sampler.SOURCE_DESKTOP_SIZE,
+        'standalone_minimum_cell_size': STANDALONE_MINIMUM_CELL_SIZE,
+        'game_styles_uniform': STYLES, 'themes_uniform': THEMES,
+        'complete_board_candidates': source_sampler.COMPLETE_BOARD_CANDIDATES,
+        'board_dimension_range': source_sampler.BOARD_DIMENSION_RANGE,
+        'complete_margin_pixels': source_sampler.COMPLETE_MARGIN_PIXELS,
+        'complete_random_candidates': source_sampler.COMPLETE_RANDOM_CANDIDATES,
+        'complete_random_weight': source_sampler.COMPLETE_RANDOM_WEIGHT,
+        'partial_standard_boards': source_sampler.PARTIAL_STANDARD_BOARDS,
+        'partial_standard_probability': source_sampler.PARTIAL_STANDARD_PROBABILITY,
+        'partial_extra_cells': source_sampler.PARTIAL_EXTRA_CELLS,
+        'partial_row_extension': source_sampler.PARTIAL_ROW_EXTENSION,
+        'partial_column_extension': source_sampler.PARTIAL_COLUMN_EXTENSION,
+        'board_selection_algorithm': 'grid_geometry.dataset.sampler._game',
+        'mine_density': source_sampler.MINE_DENSITY, 'game_progress_weights': source_sampler.GAME_PROGRESS,
+        'progress_ranges': source_sampler.PROGRESS_RANGES, 'finished_statuses_uniform': source_sampler.FINISHED_STATUSES,
+        'lost_progress_range': source_sampler.LOST_PROGRESS_RANGE, 'elapsed_seconds': source_sampler.ELAPSED_SECONDS,
+        'font_families_uniform': source_sampler.FONT_FAMILIES, 'font_scale': source_sampler.FONT_SCALE,
+        'bold_probability': source_sampler.BOLD_PROBABILITY, 'google_boundary_choices': source_sampler.GOOGLE_BOUNDARIES,
+        'windows7_mine_choices': source_sampler.WINDOWS7_MINES,
+        'wallpaper': {'category': 'procedural', 'subtype_weights': PROCEDURAL_SUBTYPE_WEIGHTS},
+        'source_application_probability': source_sampler.SOURCE_APPLICATION_PROBABILITY,
+        'source_applications_uniform': source_sampler.SOURCE_APPLICATIONS,
+        'negative_applications_uniform': source_sampler.NEGATIVE_APPLICATIONS,
+        'hard_negative_applications_uniform': source_sampler.HARD_NEGATIVE_APPLICATIONS,
+        'fill': {'desktop_appearance': config.desktop_appearance, 'display_scale': FILL_DISPLAY_SCALE,
+                 'desktop_size': 'output size with renderer minimum 320x240', 'applications_uniform': FILL_APPLICATIONS},
+        'padding_type_choices': PADDING_TYPES, 'padding_type_weights': PADDING_WEIGHTS,
+        'augmentation': {'resampling_uniform': tuple(method.name for method in RESAMPLING_METHODS),
+                         'blur_choices': BLUR_CHOICES, 'brightness_range': PHOTOMETRIC_RANGE,
+                         'contrast_range': PHOTOMETRIC_RANGE, 'jpeg': None},
+    }
+
+
 def _generate_one(task):
     """Spawn-safe worker: render, crop and write locally; return compact metadata."""
     from pydantic import ValidationError
@@ -175,7 +231,7 @@ def _generate_one(task):
     seed = config['seed']
     selection = random.Random(f'{seed}:{split}:{index}:selection')
     negative = selection.random() < config['negative_fraction']
-    category = _choice(selection, config['categories']) if not negative else selection.choice(('negative', 'hard_negative'))
+    category = _choice(selection, config['categories']) if not negative else selection.choice(NEGATIVE_KINDS)
     bin_index = selection.choices(range(len(config['pitch_bins'])), weights=[b[2] for b in config['pitch_bins']], k=1)[0]
     low, high, _ = config['pitch_bins'][bin_index]
     desired_pitch = selection.uniform(low, high)
@@ -246,7 +302,7 @@ def _generate_one(task):
     width, height = config['input_size']
     sx = width / (crop[2] - crop[0]); sy = height / (crop[3] - crop[1])
     augmentation_rng = random.Random(f'{seed}:{split}:{index}:{attempt}:augmentation')
-    resampling = augmentation_rng.choice((Image.Resampling.BILINEAR, Image.Resampling.BICUBIC))
+    resampling = augmentation_rng.choice(RESAMPLING_METHODS)
     # Render only the output-sized surroundings. The transformed source is
     # overlaid with transparency outside its extent, retaining fractional alignment.
     context_rng = random.Random(f'{seed}:{split}:{index}:{attempt}:context')
@@ -263,18 +319,18 @@ def _generate_one(task):
             background = render_procedural_wallpaper((width, height), context_rng, context_subtype).convert('RGBA')
         else:
             context_spec = {'mode': 'desktop', 'seed': context_rng.getrandbits(64),
-                'layout_seed': context_rng.getrandbits(64), 'screen': {'width': max(320, width), 'height': max(240, height), 'scale': 1.0},
+                'layout_seed': context_rng.getrandbits(64), 'screen': {'width': max(320, width), 'height': max(240, height), 'scale': FILL_DISPLAY_SCALE},
                 'desktop': _desktop(context_rng, config['desktop_appearance']), 'wallpaper': {'category': 'procedural', 'seed': context_rng.getrandbits(64)},
-                'windows': [{'type': context_rng.choice(('browser', 'spreadsheet', 'sudoku', 'other_puzzle')),
+                'windows': [{'type': context_rng.choice(FILL_APPLICATIONS),
                              'seed': context_rng.getrandbits(64)}]}
             background, _, _ = render_scene(context_spec, wallpaper_assets={})
             background = background.crop((0, 0, width, height)).convert('RGBA')
         image = Image.alpha_composite(background, layer).convert('RGB')
     else:
         image = layer.convert('RGB')
-    blur = augmentation_rng.choice((0., 0., 0., .25, .5))
-    brightness = augmentation_rng.uniform(.95, 1.05)
-    contrast = augmentation_rng.uniform(.95, 1.05)
+    blur = augmentation_rng.choice(BLUR_CHOICES)
+    brightness = augmentation_rng.uniform(*PHOTOMETRIC_RANGE)
+    contrast = augmentation_rng.uniform(*PHOTOMETRIC_RANGE)
     from synthetic_scenes.augmentation import adjust_image
     image = adjust_image(image, blur=blur, brightness=brightness, contrast=contrast)
     # Rendered surroundings are known background. Intentional padding is
@@ -285,7 +341,7 @@ def _generate_one(task):
     padding_side = None
     if padding_rng.random() < config['padding_example_fraction']:
         padding_side = padding_rng.choice(('left', 'right', 'top', 'bottom'))
-        padding_type = padding_rng.choices(('black', 'dark', 'light', 'random'), (5, 2, 2, 1))[0]
+        padding_type = padding_rng.choices(PADDING_TYPES, PADDING_WEIGHTS)[0]
         color = {'black': (0, 0, 0), 'dark': (36, 36, 36), 'light': (220, 220, 220),
                  'random': tuple(padding_rng.randrange(256) for _ in range(3))}[padding_type]
         from PIL import ImageDraw
@@ -383,7 +439,13 @@ def generate_dataset(destination, config=GenerationConfig()):
         raise FileExistsError(f'destination is not empty: {root}')
     root.mkdir(parents=True, exist_ok=True)
     settings = asdict(config)
-    metadata = {'generator': 'phase-grid-v1', **settings, 'status': 'incomplete'}
+    from synthetic_scenes.provenance import run_provenance
+    provenance = run_provenance(Path(__file__).resolve().parent, 'grid-geometry')
+    provenance['wallpaper_assets'] = {'status': 'not_applicable', 'reason': 'procedural wallpaper only'}
+    metadata = {'generator': 'phase-grid-v1', 'generator_revision': GENERATOR_REVISION,
+                'experiment': 'grid-geometry', 'dataset_name': root.name,
+                **settings, 'source_policy': deepcopy(_source_policy(config)), 'provenance': provenance,
+                'status': 'incomplete'}
     _write_json(root / 'config.json', metadata)
     for split in ('train', 'val', 'test'):
         (root / split).mkdir()

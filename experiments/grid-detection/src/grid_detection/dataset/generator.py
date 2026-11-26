@@ -1,9 +1,11 @@
 """Deterministic, split-safe streaming YOLO dataset generation."""
 from collections import Counter, deque
+from copy import deepcopy
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
 from io import BytesIO
 import json
+import inspect
 import multiprocessing
 from pathlib import Path
 import random
@@ -14,11 +16,16 @@ from tqdm import tqdm
 from synthetic_scenes.assets.wallpapers.getters import get_wallpapers
 from synthetic_scenes.augmentation import augment_scene
 from synthetic_scenes.render import PlacementError, render_scene
+from synthetic_scenes.minesweeper.styles import THEMES
+from synthetic_scenes.provenance import asset_inventory, run_provenance
+from synthetic_scenes.wallpaper import PROCEDURAL_SUBTYPE_WEIGHTS
 from .sampler import sample_scene
 from .sampling_config import SAMPLING_CONFIG
 from .yolo import YOLO_CLASSES, write_yolo_config, yolo_lines
 
 GENERATOR_REVISION = 7  # Resolution-conditioned native scale and desktop sampling.
+CAPTURE_POLICY = {'resize_range': (.65, 1.25), 'blur_choices': (0., 0., .25, .5),
+                  'jpeg_quality_choices': (None, None, 85, 95)}
 _worker_assets = None
 _worker_exclusion_path = None
 _worker_excluded = frozenset()
@@ -26,8 +33,11 @@ _worker_excluded = frozenset()
 
 def prepare_assets():
     """Resolve assets in the parent, before starting spawned workers."""
+    weights = SAMPLING_CONFIG['wallpaper_type']
+    if SAMPLING_CONFIG['scene_mode'].get('desktop', 0) <= 0:
+        return {}
     return {category: tuple(str(path) for path in get_wallpapers(category))
-            for category in ('artwork', 'photographs')}
+            for category in ('artwork', 'photographs') if weights.get(category, 0) > 0}
 
 
 def _initialize_worker(assets):
@@ -73,8 +83,8 @@ def _generate_one(task):
     if task['augment']:
         rng = random.Random(f'{seed}:{split}:{index}:{attempt}:augmentation')
         image, annotations = augment_scene(image, annotations,
-            resize_factor=rng.uniform(.65, 1.25), blur=rng.choice((0., 0., .25, .5)),
-            jpeg_quality=rng.choice((None, None, 85, 95)))
+            resize_factor=rng.uniform(*CAPTURE_POLICY['resize_range']), blur=rng.choice(CAPTURE_POLICY['blur_choices']),
+            jpeg_quality=rng.choice(CAPTURE_POLICY['jpeg_quality_choices']))
     name = f'{index:06d}'
     mode = task['mode']
     encoded_bytes = 0
@@ -235,18 +245,42 @@ def generate_dataset(destination, train=100, val=20, test=0, seed=42, workers=1,
         raise FileExistsError(f'Destination is not empty: {root}')
     root.mkdir(parents=True, exist_ok=True)
     counts = [('train', train), ('val', val)] + ([('test', test)] if test else [])
-    config = {'generator_revision': GENERATOR_REVISION, 'train': train, 'val': val, 'test': test,
+    scale_policy = SAMPLING_CONFIG['display_scale']
+    display_kind = 'conditional_by_resolution' if any(isinstance(value, dict) for value in scale_policy.values()) else 'global'
+    augmentation_defaults = inspect.signature(augment_scene).parameters
+    capture_policy = {**deepcopy(CAPTURE_POLICY),
+                      'resampling': augmentation_defaults['resampling'].default.name,
+                      'brightness': augmentation_defaults['brightness'].default,
+                      'contrast': augmentation_defaults['contrast'].default}
+    config = {'experiment': 'grid-detection', 'dataset_name': root.name,
+              'generator_revision': GENERATOR_REVISION, 'train': train, 'val': val, 'test': test,
               'seed': seed, 'workers': workers, 'png_compression': png_compression,
-              'augment': augment, 'max_attempts': max_attempts, 'scene_details': scene_details,
-              'sampling_scope': SAMPLING_CONFIG, 'classes': YOLO_CLASSES, 'status': 'incomplete'}
+              'augment': augment, 'max_attempts': max_attempts, 'scene_details': scene_details, 'progress': progress,
+              'sampling_scope': deepcopy(SAMPLING_CONFIG), 'classes': YOLO_CLASSES,
+              'source_policy': {'display_scale_policy': display_kind, 'themes': deepcopy(THEMES),
+                  'procedural_wallpaper_subtype_weights': deepcopy(PROCEDURAL_SUBTYPE_WEIGHTS),
+                  'capture_augmentation': capture_policy,
+                  'standalone_minimum_cell_size': SAMPLING_CONFIG['cell_size']['small']['range'][0],
+                  'negative_scene_policy': 'desktop game_count zero'},
+              'provenance': run_provenance(Path(__file__).resolve().parent, 'grid-detection'),
+              'status': 'incomplete'}
+    config['provenance']['wallpaper_assets'] = {'status': 'not_collected'}
     _write_json(root / 'config.json', config)
     for split, _ in counts:
         for directory in ('images', 'labels'):
             (root / directory / split).mkdir(parents=True, exist_ok=True)
     write_yolo_config(root, test=bool(test))
+    assets = prepare_assets() if any(count for _, count in counts) else {}
+    if assets:
+        config['provenance']['wallpaper_assets'] = asset_inventory(assets)
+    else:
+        active = SAMPLING_CONFIG['scene_mode'].get('desktop', 0) > 0 and any(
+            SAMPLING_CONFIG['wallpaper_type'].get(category, 0) > 0 for category in ('artwork', 'photographs'))
+        config['provenance']['wallpaper_assets'] = {'status': 'not_collected_no_samples' if active else 'not_applicable'}
+    _write_json(root / 'config.json', config)
     stats = run_splits(counts, seed=seed, workers=workers, png_compression=png_compression,
         augment=augment, max_attempts=max_attempts, scene_details=scene_details,
-        progress=progress, mode='export', root=root)
+        progress=progress, mode='export', root=root, assets=assets)
     _write_json(root / 'statistics.json', stats)
     config['status'] = 'complete'
     _write_json(root / 'config.json', config)
