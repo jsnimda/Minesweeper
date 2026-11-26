@@ -146,6 +146,13 @@ def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> t
     and mine positions. Invalid requests raise Pydantic ValidationError; a
     valid desktop that cannot be packed raises PlacementError. The requested
     scene is copied into the resolved result only when 'scene' is selected.
+
+    Game generation defaults to normal. Set generation_mode='targeted' and
+    target_number=1..8 for an active, won, or lost game to guarantee that the
+    designated number is visible. Progress is approximate and the mine count is
+    preserved. Invalid fields raise ValidationError; infeasible target boards
+    raise ValueError. Board annotations include generation_mode, target_number,
+    and the board-relative target_position.
     """
     if isinstance(details, (str, bytes)) or not isinstance(details, Collection):
         raise ValueError('details must be a collection of detail names')
@@ -219,7 +226,8 @@ def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> t
     for index, game_spec in games:
         game = generate_game(rows=game_spec['rows'], columns=game_spec['columns'],
             mine_count=game_spec['mine_count'], status=game_spec['status'], progress=game_spec['progress'],
-            seed=game_spec['seed'], elapsed_seconds=game_spec.get('elapsed_seconds', 0), mode='normal')
+            seed=game_spec['seed'], elapsed_seconds=game_spec.get('elapsed_seconds', 0),
+            mode=game_spec.get('generation_mode', 'normal'), target_number=game_spec.get('target_number'))
         options = dict(game_spec['appearance'])
         options['cell_size'] = plan[index]['cell_size']
         options['zoom'] = _drawing_scale(game_spec['appearance'].get('zoom', 1.0), display_scale)

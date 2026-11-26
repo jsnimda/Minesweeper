@@ -137,9 +137,16 @@ class GameContent(SceneModel):
     seed: Seed
     appearance: GameAppearance
     elapsed_seconds: Annotated[StrictInt, Field(ge=0)] = 0
+    generation_mode: Literal['normal', 'targeted'] = 'normal'
+    target_number: Annotated[StrictInt, Field(ge=1, le=8)] | None = None
 
     @model_validator(mode='after')
     def check_game(self):
+        if self.generation_mode == 'targeted':
+            if self.target_number is None or self.status == 'new':
+                raise ValueError('targeted generation requires a target number and a non-new status')
+        elif self.target_number is not None:
+            raise ValueError('target_number requires targeted generation')
         if self.mine_count >= self.rows * self.columns:
             raise ValueError('mine_count must be less than the number of cells')
         if self.status == 'active' and not 0 < self.progress < 1:
