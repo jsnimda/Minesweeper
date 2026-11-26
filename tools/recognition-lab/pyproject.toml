@@ -1,0 +1,25 @@
+[project]
+name = "recognition-lab"
+version = "0.1.0"
+requires-python = "==3.13.18"
+dependencies = [
+  "grid-geometry", "numpy>=2.5.5", "pillow>=13.0.0", "torch==2.15.0",
+  "ultralytics==8.4.216", "pyyaml>=6.0.4", "PySide6", "skia-python>=144.1", "mss==10.2.0", "PyAutoGUI>=0.9.54",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pytest>=9.2.0"]
+
+[tool.uv.sources]
+grid-geometry = { path = "../../experiments/grid-geometry", editable = true }
+torch = [{ index = "pytorch-cu134", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }]
+torchvision = [{ index = "pytorch-cu134", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu134"
+url = "https://download.pytorch.org/whl/cu134"
+explicit = true
