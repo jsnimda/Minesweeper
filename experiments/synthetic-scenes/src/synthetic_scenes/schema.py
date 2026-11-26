@@ -7,6 +7,8 @@ from typing import Annotated, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr, ValidationInfo, field_validator, model_validator
 
+from .minesweeper.geometry import validate_zoom
+
 
 Seed = StrictInt | StrictFloat | StrictStr | bytes | bytearray | None
 SceneMode = Literal['desktop', 'game', 'grid']
@@ -74,6 +76,13 @@ class GameAppearance(SceneModel):
     style: GameStyle = 'classic'
     theme: StrictStr = 'default'
     cell_size: Annotated[StrictInt, Field(ge=8)] = 32
+    zoom: StrictFloat = 1.0
+
+    @field_validator('zoom', mode='before')
+    @classmethod
+    def check_zoom(cls, value):
+        return validate_zoom(value)
+
     font_family: StrictStr = 'Arial'
     font_scale: Annotated[StrictFloat, Field(ge=.3, le=.9)] = .72
     bold: StrictBool = True
@@ -211,6 +220,9 @@ class BoardAnnotation(TypedDict):
     status: str
     board_id: str
     game_state_id: str
+    requested_cell_size: NotRequired[int]
+    resolved_cell_size: NotRequired[int]
+    requested_zoom: NotRequired[float]
     coordinate_space: NotRequired[str]
     grid_origin: NotRequired[tuple[float, float]]
     window_box: NotRequired[Box]

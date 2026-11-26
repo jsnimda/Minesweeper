@@ -90,7 +90,14 @@ def plan_game_windows(games, size, desktop, seed):
             if requested < 8:
                 raise ValueError('cell_size must be at least 8')
             cell = round(requested + (min(12, requested)-requested)*attempt/59)
-            content_size = measure_game_region(spec['rows'], spec['columns'], spec['appearance'].get('style', 'classic'), cell)
+            try:
+                content_size = measure_game_region(
+                    spec['rows'], spec['columns'],
+                    spec['appearance'].get('style', 'classic'), cell,
+                    spec['appearance'].get('zoom', 1.0),
+                )
+            except OverflowError:
+                raise PlacementError('Zoomed game cannot fit the work area') from None
             w, h = window_size(content_size, style=desktop['style'])
             items.append((index, w, h, cell))
         placed = []
@@ -205,6 +212,9 @@ def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> t
         visible = get_visible_cells(game)
         content, metadata = (render_board if mode == 'grid' else render_game_region)(
             game, native=True, visible_cells=visible, **options)
+        metadata['requested_cell_size'] = game_spec['appearance'].get('cell_size', 32)
+        metadata['resolved_cell_size'] = plan[index]['cell_size']
+        metadata['requested_zoom'] = game_spec['appearance'].get('zoom', 1.0)
         board = game['board']
         metadata['board_id'] = 'board-' + sha256(json.dumps(board.shape).encode('ascii') + board.tobytes()).hexdigest()
         metadata['game_state_id'] = 'state-' + sha256(metadata['board_id'].encode() + game['status'].encode() + str(game['elapsed_seconds']).encode() + visible.tobytes()).hexdigest()
@@ -212,6 +222,9 @@ def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> t
             metadata['mine_positions'] = [(int(r), int(c)) for r, c in zip(*(board == -1).nonzero())]
         if mode == 'desktop':
             x, y, _, _ = plan[index]['box']
+            planned_size = (plan[index]['box'][2]-x, plan[index]['box'][3]-y)
+            if window_size((content.width(), content.height()), style=desktop['style']) != planned_size:
+                raise RuntimeError('Measurement and rendered dimensions disagree')
             layer = WindowLayer(content, metadata['boxes'], (x, y), title='Minesweeper')
             layers.append(layer)
             _, (offset_x, offset_y) = window_geometry(

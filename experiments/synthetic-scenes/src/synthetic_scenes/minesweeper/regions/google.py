@@ -1,17 +1,18 @@
 """Flat Google-inspired toolbar; its selector and utilities are decorative."""
 from ..controls import icon_number
 from ..drawing import color, font_for, line, polygon, rounded_rect, text
+from ..geometry import scaled_measurement
 from . import box, digit_slots
 
 UI_REFERENCE = 20
 
 
-def layout(grid_size, cell_size):
+def layout(grid_size, cell_size, zoom=1.0):
     gw,gh = grid_size
-    s = UI_REFERENCE
-    h = max(24, round(1.45*s))
-    control_h = max(16, round(h*.68))
-    gap = max(4, round(h*.22))
+    s = UI_REFERENCE * zoom
+    h = max(scaled_measurement(24, zoom), round(1.45*s))
+    control_h = max(scaled_measurement(16, zoom), round(h*.68))
+    gap = max(scaled_measurement(4, zoom), round(h*.22))
     slots = digit_slots(grid_size,cell_size)
     cw = control_h + round(control_h*.40*slots)
     selector = round(h*2.15)

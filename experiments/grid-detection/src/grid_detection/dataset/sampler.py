@@ -183,7 +183,10 @@ def _fit_standalone_game(game: dict, mode: str) -> None:
     budget = SAMPLING_CONFIG["standalone_image_budget"]
     measure = measure_grid if mode == "grid" else measure_game_region
     for cell_size in range(requested, minimum - 1, -1):
-        width, height = measure(game["rows"], game["columns"], appearance["style"], cell_size)
+        width, height = measure(
+            game["rows"], game["columns"], appearance["style"], cell_size,
+            appearance.get("zoom", 1.0),
+        )
         if (max(width, height) <= budget["max_dimension"]
                 and width * height <= budget["max_pixels"]):
             appearance["cell_size"] = cell_size

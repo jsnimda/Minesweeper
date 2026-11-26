@@ -2,23 +2,24 @@
 from ..controls import bevel, digital, smiley
 from ..drawing import color
 from ..styles.classic import THEMES
+from ..geometry import scaled_measurement
 from . import box
 
 UI_REFERENCE = 24
 
 
-def layout(grid_size, cell_size):
+def layout(grid_size, cell_size, zoom=1.0):
     gw, gh = grid_size
-    s = UI_REFERENCE
+    s = UI_REFERENCE * zoom
     # The sign has its own area in the LED display.
     slots = max(3, len(str((gw//cell_size)*(gh//cell_size))))
-    edge = max(2, round(.18*s))
-    space = max(3, round(.28*s))
-    h = max(16, round(1.05*s))
-    digit_width = max(5, round(h*.52))
-    cw = slots*digit_width + round(digit_width*.65) + 2*max(1, round(h*.06))
-    timer_w = 3*digit_width + 2*max(1, round(h*.06))
-    reset_size = max(16, round(1.55*s))
+    edge = max(scaled_measurement(2, zoom), round(.18*s))
+    space = max(scaled_measurement(3, zoom), round(.28*s))
+    h = max(scaled_measurement(16, zoom), round(1.05*s))
+    digit_width = max(scaled_measurement(5, zoom), round(h*.52))
+    cw = slots*digit_width + round(digit_width*.65) + 2*max(scaled_measurement(1, zoom), round(h*.06))
+    timer_w = 3*digit_width + 2*max(scaled_measurement(1, zoom), round(h*.06))
+    reset_size = max(scaled_measurement(16, zoom), round(1.55*s))
     minimum_width = 2*cw+reset_size+4*space+2*edge
     width = max(gw+2*(edge+space), minimum_width)
     header_y = edge+space

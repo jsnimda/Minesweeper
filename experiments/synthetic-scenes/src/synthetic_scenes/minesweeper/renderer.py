@@ -4,7 +4,7 @@ import skia
 
 from ..image_conversion import image_to_pillow
 from .board import CellState, get_visible_cells
-from .geometry import cell_gap, measure_grid
+from .geometry import cell_gap, effective_cell_size, measure_grid
 from .drawing import font_for, line, rect, text
 from .symbols import draw_flag, draw_mine
 from .styles import classic, google, microsoft, windows7
@@ -104,6 +104,7 @@ def render_board(
     style='classic',
     theme='default',
     cell_size=32,
+    zoom=1.0,
     font_family='Arial',
     font_scale=.72,
     bold=True,
@@ -119,8 +120,7 @@ def render_board(
     boundary_ratio controls Google's covered/revealed boundary as a fraction
     of tile size. Zero disables it. Other styles ignore this parameter.
     """
-    if not isinstance(cell_size, int) or cell_size < 8:
-        raise ValueError('cell_size must be an integer >= 8')
+    size = effective_cell_size(cell_size, zoom)
     if not .3 <= font_scale <= .9:
         raise ValueError('font_scale must be between .3 and .9')
     if not 0 <= boundary_ratio <= .25:
@@ -144,7 +144,6 @@ def render_board(
     cells = get_visible_cells(game) if visible_cells is None else visible_cells
     opened = _opened_surfaces(game, cells, style)
     rows, columns = cells.shape
-    size = cell_size
     gap = cell_gap(style, size)
     pitch = size + gap
     width, height = measure_grid(rows, columns, style, size)
@@ -181,6 +180,12 @@ def render_board(
     # Keep annotations independent of the CNN's eventual label scheme.
     parameters = {
         'cell_size': size,
+        'base_cell_size': cell_size,
+        'zoom': zoom,
+        'cell_width': size,
+        'cell_height': size,
+        'pitch_x': pitch,
+        'pitch_y': pitch,
         'gap': gap,
         'pitch': pitch,
         'font_family': font_family,
@@ -194,6 +199,7 @@ def render_board(
 
     metadata = {
         'boxes': {'grid': (0, 0, width, height)},
+        'grid_origin': (0, 0),
         'rows': rows,
         'columns': columns,
         'style': style,

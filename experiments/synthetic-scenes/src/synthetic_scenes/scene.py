@@ -40,9 +40,10 @@ DEFAULT_CHROME = {'classic': 'classic', 'windows7': 'aero', 'microsoft': 'modern
 
 def _measure(spec, mode, cell_size):
     style = spec.appearance.get('style', 'classic')
+    zoom = spec.appearance.get('zoom', 1.0)
     if mode == 'grid':
-        return measure_grid(spec.rows, spec.columns, style, cell_size), 'none'
-    content = measure_game_region(spec.rows, spec.columns, style, cell_size)
+        return measure_grid(spec.rows, spec.columns, style, cell_size, zoom), 'none'
+    content = measure_game_region(spec.rows, spec.columns, style, cell_size, zoom)
     chrome = (spec.chrome or DEFAULT_CHROME[style]) if mode == 'desktop' else 'none'
     return chrome_size(content, chrome), chrome
 
