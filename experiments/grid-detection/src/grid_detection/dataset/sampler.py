@@ -301,6 +301,8 @@ def sample_scene(seed: int | str = 42, *, sampling_metadata: dict | None = None)
     mode = choose(rng, SAMPLING_CONFIG["scene_mode"])
     if mode == "desktop":
         resolution_group, (width, height) = choose_group(rng, SAMPLING_CONFIG["resolution"])
+        if sampling_metadata is not None:
+            sampling_metadata["resolution_group"] = resolution_group
         scale_weights = (display_policy[resolution_group]
                          if resolution_group in display_policy else display_policy)
         display_scale = sample_scale(rng, scale_weights)

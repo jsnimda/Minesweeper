@@ -182,6 +182,9 @@ def test_scaled_native_and_transformed_metadata(monkeypatch, tmp_path, desktop):
     record = generator._generate_one(_task(tmp_path, config))
     assert record['sampled_cell_size'] == game['appearance']['cell_size']
     assert record['requested_zoom'] == 1.25
+    assert record['source_size'][0] > 0 and record['source_size'][1] > 0
+    assert (record['source_desktop'] is not None) == desktop
+    assert record['anisotropy_selected'] is True
     assert record['display_scale'] == record['requested_display_scale'] == (1.5 if desktop else 1.)
     assert record['requested_effective_scale'] == 1.25 * record['display_scale']
     if desktop:
@@ -220,6 +223,8 @@ def test_negative_metadata_retains_display_scale(monkeypatch, tmp_path, negative
     monkeypatch.setattr(generator, '_scene', negative_scene)
     record = generator._generate_one(_task(tmp_path, _config(negative_fraction=1., display_scale={1.5: 1})))
     assert record['display_scale'] == 1.5
+    assert record['source_desktop']['screen']['scale'] == 1.5
+    assert record['source_size'] == (800, 600)
     assert record['geometry'] is None and record['board_id'] is None
     assert record['sampled_cell_size'] is None and record['requested_zoom'] is None
 
@@ -245,6 +250,8 @@ def test_context_desktop_remains_neutral(monkeypatch, tmp_path):
     assert record['background_visible'] and len(requests) == 2
     assert requests[0]['screen']['scale'] == 1.5
     assert requests[1]['screen']['scale'] == 1.0
+    assert record['source_desktop']['screen']['scale'] == 1.5
+    assert record['fill_desktop']['screen']['scale'] == 1.0
     assert requests[1]['desktop']['shell'] == 'top_panel'
     assert requests[1]['desktop']['style'] == 'classic'
     assert requests[1]['desktop']['show_top_panel'] is False

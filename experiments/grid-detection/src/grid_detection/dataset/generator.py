@@ -22,6 +22,7 @@ from synthetic_scenes.wallpaper import PROCEDURAL_SUBTYPE_WEIGHTS
 from .sampler import sample_scene
 from .sampling_config import SAMPLING_CONFIG
 from .yolo import YOLO_CLASSES, write_yolo_config, yolo_lines
+from .statistics import AcceptedStatistics
 
 GENERATOR_REVISION = 7  # Resolution-conditioned native scale and desktop sampling.
 CAPTURE_POLICY = {'resize_range': (.65, 1.25), 'blur_choices': (0., 0., .25, .5),
@@ -66,7 +67,7 @@ def _generate_one(task):
             sampling_metadata = {}
             request = sample_scene(scene_seed, sampling_metadata=sampling_metadata)
             image, resolved, annotations = render_scene(
-                request, details=('scene',) if task['scene_details'] else (), wallpaper_assets=_worker_assets)
+                request, details=('scene',), wallpaper_assets=_worker_assets)
         except PlacementError as exc:
             retries['placement_retries'] += 1
             last_error = exc
@@ -80,6 +81,8 @@ def _generate_one(task):
     else:
         raise RuntimeError(f'Failed to generate {split} scene {index}') from last_error
 
+    native_size = image.size
+    native_boxes = [board['boxes']['grid'] for board in annotations['boards']]
     if task['augment']:
         rng = random.Random(f'{seed}:{split}:{index}:{attempt}:augmentation')
         image, annotations = augment_scene(image, annotations,
@@ -103,17 +106,33 @@ def _generate_one(task):
     elif mode != 'render':
         raise ValueError(f'Unknown generation mode: {mode}')
 
-    record = {'split': split, 'image': f'images/{split}/{name}.png',
+    desktop = None
+    if request['mode'] == 'desktop':
+        wallpaper = resolved.get('resolved_wallpaper', {})
+        asset = wallpaper.get('asset')
+        desktop = {'screen': request['screen'], 'resolution_group': sampling_metadata.get('resolution_group'),
+                   'appearance': request['desktop'], 'cleanliness': request.get('cleanliness'),
+                   'applications': [w['type'] for w in request['windows'] if w['type'] != 'minesweeper'],
+                   'wallpaper': {'category': wallpaper.get('category'), 'subtype': wallpaper.get('subtype'),
+                                 'asset': Path(asset).name if asset else None, 'placement': wallpaper.get('placement')}}
+    record = {'split': split, 'index': index, 'image': f'images/{split}/{name}.png',
               'label': f'labels/{split}/{name}.txt', 'scene_seed': scene_seed,
               'board_ids': board_ids, 'attempt': attempt,
+              'scene_mode': request['mode'], 'board_count': len(board_ids), 'negative': not board_ids,
+              'augmentation_enabled': task['augment'],
+              'native_size': native_size, 'final_size': image.size, 'desktop': desktop,
               'display_scale': request['screen']['scale'] if request['mode'] == 'desktop' else 1.0,
               'boards': []}
-    for board, sampled_cell_size in zip(
-        annotations['boards'], sampling_metadata['sampled_cell_sizes'], strict=True
+    game_specs = [w['content'] for w in request['windows'] if w['type'] == 'minesweeper']
+    for board, native_box, game, sampled_cell_size in zip(
+        annotations['boards'], native_boxes, game_specs, sampling_metadata['sampled_cell_sizes'], strict=True
     ):
         parameters = board['style_parameters']
         record['boards'].append({
             'board_id': board['board_id'],
+            'game_state_id': board['game_state_id'], 'rows': board['rows'], 'columns': board['columns'],
+            'mine_count': game['mine_count'], 'status': board['status'], 'style': board['style'], 'theme': board['theme'],
+            'native_grid_box': native_box, 'final_grid_box': board['boxes']['grid'],
             'sampled_cell_size': sampled_cell_size,
             'requested_cell_size': board['requested_cell_size'],
             'resolved_cell_size': board['resolved_cell_size'],
@@ -167,6 +186,7 @@ def run_splits(counts, *, seed, workers, png_compression, augment, max_attempts,
     _initialize_worker(assets)
     excluded = set()
     statistics = {}
+    accepted = AcceptedStatistics()
     pool = (ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context('spawn'),
                                 initializer=_initialize_worker, initargs=(assets,))
             if workers > 1 and any(count for _, count in counts) else nullcontext(None))
@@ -197,6 +217,8 @@ def run_splits(counts, *, seed, workers, png_compression, augment, max_attempts,
                 with bar_context as bar:
                     for result in _ordered_results(tasks, executor, workers):
                         record = result['record']
+                        if mode == 'export':
+                            accepted.add(record)
                         ids = record['board_ids']
                         if not excluded.isdisjoint(ids):
                             raise RuntimeError('Worker accepted a minefield from an earlier split')
@@ -222,6 +244,10 @@ def run_splits(counts, *, seed, workers, png_compression, augment, max_attempts,
                 statistics[split] = {'counts': dict(totals), 'scene_modes': dict(modes),
                     'board_styles': dict(styles), 'wallpaper_categories': dict(wallpapers),
                     'application_counts': dict(applications), 'game_counts': dict(games)}
+    if mode == 'export':
+        statistics['accepted'] = accepted.result({'train': dict(counts).get('train', 0),
+                                                   'val': dict(counts).get('val', 0),
+                                                   'test': dict(counts).get('test', 0)})
     return statistics
 
 

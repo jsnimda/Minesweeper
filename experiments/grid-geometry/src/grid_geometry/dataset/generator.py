@@ -25,6 +25,7 @@ from .targets import PhaseGeometry
 from .sampling_config import CATEGORIES, GenerationConfig, SOURCE_CELL_SIZE, STYLES, THEMES
 from . import sampler as source_sampler
 from .sampler import _choice, _game, _desktop, _scene
+from .statistics import AcceptedStatistics
 
 GENERATOR_REVISION = 1
 STANDALONE_MINIMUM_CELL_SIZE = 12
@@ -220,6 +221,16 @@ def _source_policy(config):
     }
 
 
+def _desktop_metadata(request, resolved):
+    """Compact source/fill desktop information from the actual render."""
+    wallpaper = resolved.get('resolved_wallpaper', {})
+    asset = wallpaper.get('asset')
+    return {'screen': request['screen'], 'appearance': request['desktop'],
+            'applications': [window['type'] for window in request['windows'] if window['type'] != 'minesweeper'],
+            'wallpaper': {'category': wallpaper.get('category'), 'subtype': wallpaper.get('subtype'),
+                          'asset': Path(asset).name if asset else None, 'placement': wallpaper.get('placement')}}
+
+
 def _generate_one(task):
     """Spawn-safe worker: render, crop and write locally; return compact metadata."""
     from pydantic import ValidationError
@@ -235,7 +246,8 @@ def _generate_one(task):
     bin_index = selection.choices(range(len(config['pitch_bins'])), weights=[b[2] for b in config['pitch_bins']], k=1)[0]
     low, high, _ = config['pitch_bins'][bin_index]
     desired_pitch = selection.uniform(low, high)
-    aspect = selection.uniform(1 - config['anisotropic_max'], 1 + config['anisotropic_max']) if selection.random() < config['anisotropic_fraction'] else 1.
+    anisotropy_selected = selection.random() < config['anisotropic_fraction']
+    aspect = selection.uniform(1 - config['anisotropic_max'], 1 + config['anisotropic_max']) if anisotropy_selected else 1.
     excluded = set(json.loads(Path(task['excluded_path']).read_text(encoding='utf-8')))
     error = None
     retries = Counter()
@@ -299,6 +311,8 @@ def _generate_one(task):
     else:
         raise RuntimeError(f'could not generate {split}/{sample_id} after {config["max_attempts"]} attempts: {error}') from error
 
+    source_size = image.size
+    source_desktop = _desktop_metadata(request, resolved) if request['mode'] == 'desktop' else None
     width, height = config['input_size']
     sx = width / (crop[2] - crop[0]); sy = height / (crop[3] - crop[1])
     augmentation_rng = random.Random(f'{seed}:{split}:{index}:{attempt}:augmentation')
@@ -309,6 +323,7 @@ def _generate_one(task):
     requested_context = _choice(context_rng, config['context_weights'])
     context_type = requested_context
     context_subtype = None
+    fill_desktop = None
     layer = image.convert('RGBA').transform((width, height), Image.Transform.EXTENT, crop,
                                              resample=resampling, fillcolor=(0, 0, 0, 0))
     background_visible = layer.getchannel('A').getextrema()[0] < 255
@@ -323,7 +338,8 @@ def _generate_one(task):
                 'desktop': _desktop(context_rng, config['desktop_appearance']), 'wallpaper': {'category': 'procedural', 'seed': context_rng.getrandbits(64)},
                 'windows': [{'type': context_rng.choice(FILL_APPLICATIONS),
                              'seed': context_rng.getrandbits(64)}]}
-            background, _, _ = render_scene(context_spec, wallpaper_assets={})
+            background, fill_resolved, _ = render_scene(context_spec, details=('scene',), wallpaper_assets={})
+            fill_desktop = _desktop_metadata(context_spec, fill_resolved)
             background = background.crop((0, 0, width, height)).convert('RGBA')
         image = Image.alpha_composite(background, layer).convert('RGB')
     else:
@@ -339,11 +355,14 @@ def _generate_one(task):
     known_box = (0, 0, width, height)
     padding_type = None
     padding_side = None
+    padding_color = None
+    padding_extent = 0
     if padding_rng.random() < config['padding_example_fraction']:
         padding_side = padding_rng.choice(('left', 'right', 'top', 'bottom'))
         padding_type = padding_rng.choices(PADDING_TYPES, PADDING_WEIGHTS)[0]
         color = {'black': (0, 0, 0), 'dark': (36, 36, 36), 'light': (220, 220, 220),
                  'random': tuple(padding_rng.randrange(256) for _ in range(3))}[padding_type]
+        padding_color = color
         from PIL import ImageDraw
         if padding_side in ('left', 'right'):
             amount = padding_rng.randint(1, max(1, int(width * config['padding_max_fraction'])))
@@ -353,6 +372,7 @@ def _generate_one(task):
             amount = padding_rng.randint(1, max(1, int(height * config['padding_max_fraction'])))
             rect = (0, 0, width, amount) if padding_side == 'top' else (0, height - amount, width, height)
             known_box = (0, amount, width, height) if padding_side == 'top' else (0, 0, width, height - amount)
+        padding_extent = amount
         ImageDraw.Draw(image).rectangle((rect[0], rect[1], rect[2] - 1, rect[3] - 1), fill=color)
     geometry_dict = asdict(target_geometry) if target_geometry is not None else None
     requested_bin = f'{low:g}-{high:g}'
@@ -367,7 +387,7 @@ def _generate_one(task):
     else:
         truncated_sides = original_ideal_end = transformed_ideal_end = None
     fractions = sample_fractions((width, height), known_box, target_geometry, config['transition_ratio'])
-    metadata = {**fractions, 'sample_id': sample_id, 'split': split, 'seed': seed, 'attempt': attempt,
+    metadata = {**fractions, 'sample_id': sample_id, 'index': index, 'split': split, 'seed': seed, 'attempt': attempt,
                 'scene_seed': request['seed'], 'board_id': board['board_id'] if board else None,
                 'game_state_id': board['game_state_id'] if board else None,
                 'style': board['style'] if board else None, 'appearance': board['style_parameters'] if board else None,
@@ -386,6 +406,9 @@ def _generate_one(task):
                 'transformed_ideal_end': transformed_ideal_end, 'crop': crop,
                 'transform': {'scale_x': sx, 'scale_y': sy, 'offset_x': -crop[0] * sx, 'offset_y': -crop[1] * sy},
                 'known_box': known_box, 'requested_category': category, 'category': category,
+                'anisotropy_ratio': aspect if board else None, 'anisotropy_selected': anisotropy_selected if board else None,
+                'source_size': source_size, 'final_size': (width, height),
+                'source_desktop': source_desktop, 'fill_desktop': fill_desktop,
                 'requested_pitch_bin': requested_bin if board else None,
                 'requested_pitch': desired_pitch if board else None,
                 'effective_pitch_x': target_geometry.pitch_x if board else None,
@@ -400,6 +423,7 @@ def _generate_one(task):
                 'intentional_padding_requested': padding_type is not None,
                 'accidental_padding_fraction': 0.,
                 'padding_type': padding_type, 'padding_side': padding_side,
+                'padding_extent': padding_extent, 'padding_color': padding_color,
                 'scene_mode': request['mode'],
                 'negative_source': request['windows'][0]['type'] if negative else None,
                 'augmentation': {'resampling': resampling.name, 'blur': blur, 'brightness': brightness, 'contrast': contrast},
@@ -458,6 +482,7 @@ def generate_dataset(destination, config=GenerationConfig()):
     all_ids = set()
     ids_by_split = {}
     statistics = {}
+    accepted = AcceptedStatistics(config.standalone_source_budget)
     pool = (ProcessPoolExecutor(max_workers=config.workers, mp_context=multiprocessing.get_context('spawn'))
             if config.workers > 1 and (config.train or config.val or config.test) else nullcontext(None))
     with tempfile.TemporaryDirectory(prefix='phase-identities-') as temporary, pool as executor:
@@ -475,6 +500,7 @@ def generate_dataset(destination, config=GenerationConfig()):
                 bar_context = tqdm(total=count, desc=split, unit='sample') if config.progress and count else nullcontext(None)
                 with bar_context as bar:
                     for record in _ordered_results(tasks, executor, config.workers):
+                        accepted.add(record)
                         fraction_records.append({key: record[key] for key in ('category', 'actual_pitch_bin_x',
                             'grid_coverage_fraction', 'phase_supervision_fraction', 'grid_occupancy_fraction', 'padding_fraction')})
                         padding_counts['requested'] += record['intentional_padding_requested']
@@ -509,7 +535,8 @@ def generate_dataset(destination, config=GenerationConfig()):
                         'accidental_samples': 0},
                     'retries': dict(retries), 'sampling_fractions': summarize_fractions(fraction_records), 'duration_seconds': elapsed, 'samples_per_second': samples / elapsed if elapsed else 0.}
     overlap = {f'{a}:{b}': len(ids_by_split[a] & ids_by_split[b]) for a, b in (('train', 'val'), ('train', 'test'), ('val', 'test'))}
-    result = {'splits': statistics, 'board_identity_overlap': overlap, 'duration_seconds': perf_counter() - started}
+    result = {'splits': statistics, 'board_identity_overlap': overlap, 'duration_seconds': perf_counter() - started,
+              'accepted': accepted.result({'train': config.train, 'val': config.val, 'test': config.test})}
     _write_json(root / 'statistics.json', result)
     metadata['status'] = 'complete'
     _write_json(root / 'config.json', metadata)

@@ -176,6 +176,8 @@ def test_negative_desktop_manifest(monkeypatch, tmp_path):
     record = _generate(monkeypatch, tmp_path, _desktop(), [])
     assert record['display_scale'] == 1.5
     assert record['boards'] == [] and record['board_ids'] == []
+    assert record['negative'] and record['board_count'] == 0
+    assert record['native_size'] == record['final_size'] == (800, 600)
     assert 'resolved_scene' not in record
 
 
@@ -194,10 +196,17 @@ def test_native_metadata_and_augmentation_for_multiple_boards(monkeypatch, tmp_p
     request = _desktop([_game(20, 1.25, seed=10), _game(17, .75, seed=11)])
     raw = _generate(monkeypatch, tmp_path, request, [20, 17])
     augmented = _generate(monkeypatch, tmp_path, request, [20, 17], augment=True)
-    assert raw['boards'] == augmented['boards']
+    for original, transformed in zip(raw['boards'], augmented['boards'], strict=True):
+        assert {k: v for k, v in original.items() if k != 'final_grid_box'} == {
+            k: v for k, v in transformed.items() if k != 'final_grid_box'}
+        sx, sy = augmented['augmentation']['actual_scale']
+        assert transformed['final_grid_box'] == pytest.approx(tuple(
+            value * (sx if index % 2 == 0 else sy)
+            for index, value in enumerate(original['final_grid_box'])))
     assert [board['board_id'] for board in raw['boards']] == raw['board_ids']
     assert [board['sampled_cell_size'] for board in raw['boards']] == [20, 17]
     for board, zoom in zip(raw['boards'], (1.25, .75), strict=True):
+        assert board['game_state_id'] and board['native_grid_box'] == board['final_grid_box']
         assert board['requested_zoom'] == zoom
         assert board['requested_display_scale'] == 1.5
         assert board['requested_effective_scale'] == zoom * 1.5
