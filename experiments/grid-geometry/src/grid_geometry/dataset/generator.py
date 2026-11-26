@@ -26,6 +26,8 @@ from .sampling_config import CATEGORIES, GenerationConfig, SOURCE_CELL_SIZE, STY
 from . import sampler as source_sampler
 from .sampler import _choice, _game, _desktop, _scene
 from .statistics import AcceptedStatistics
+from synthetic_scenes.attempt_statistics import AttemptCounters, NOT_APPLICABLE, board_factors, fixed_bucket, summaries
+from synthetic_scenes.dataset_statistics import BINS
 
 GENERATOR_REVISION = 1
 STANDALONE_MINIMUM_CELL_SIZE = 12
@@ -231,6 +233,14 @@ def _desktop_metadata(request, resolved):
                           'asset': Path(asset).name if asset else None, 'placement': wallpaper.get('placement')}}
 
 
+def _diagnostic_call(function, *args, **kwargs):
+    """Keep diagnostic ValueErrors out of the existing retryable source path."""
+    try:
+        return function(*args, **kwargs)
+    except ValueError as exc:
+        raise RuntimeError('attempt diagnostics failed') from exc
+
+
 def _generate_one(task):
     """Spawn-safe worker: render, crop and write locally; return compact metadata."""
     from pydantic import ValidationError
@@ -251,19 +261,65 @@ def _generate_one(task):
     excluded = set(json.loads(Path(task['excluded_path']).read_text(encoding='utf-8')))
     error = None
     retries = Counter()
+    attempts = AttemptCounters()
+    objective = {'polarity': 'negative' if negative else 'positive',
+                 'objective_type': category if negative else 'positive',
+                 'negative_kind': category if negative else NOT_APPLICABLE,
+                 'category': NOT_APPLICABLE if negative else category,
+                 'pitch_bin': NOT_APPLICABLE if negative else f'{low:g}-{high:g}',
+                 'desired_pitch': NOT_APPLICABLE if negative else desired_pitch,
+                 'anisotropy_selected': NOT_APPLICABLE if negative else anisotropy_selected,
+                 'anisotropy_ratio': NOT_APPLICABLE if negative else aspect}
     for attempt in range(config['max_attempts']):
         rng = random.Random(f'{seed}:{split}:{index}:{attempt}:scene')
+        fields = {'objective_type': objective['objective_type'], 'objective_polarity': objective['polarity'],
+                  'crop_category': objective['category'],
+                  'pitch_bin': objective['pitch_bin'], 'source_mode': None, 'display_scale': None,
+                  'shell': None, 'desktop_style': None, 'color_scheme': None,
+                  'screen_width': None, 'screen_height': None, 'game_zoom': None,
+                  'board_area': None, 'sampled_cell_size': None, 'game_style': None}
+        attempted_boards = []
+        fitting = {}
+        stage = 'sampling'
         try:
             game, progress_kind = (None, None) if negative else _game(rng, category, desired_pitch, config['input_size'],
                 coverage_exploration_fraction=config['coverage_exploration_fraction'],
                 coverage_preference_exponent=config['coverage_preference_exponent'], game_zoom=config['game_zoom'])
             sampled_cell_size = game['appearance']['cell_size'] if game else None
+            if game:
+                factors = _diagnostic_call(board_factors, game)
+                factors['effective_native_scale'] = None
+                attempted_boards = [factors]
+                for name in ('game_zoom', 'board_area', 'sampled_cell_size', 'game_style'):
+                    fields[name] = factors[name]
+            else:
+                for name in ('game_zoom', 'board_area', 'sampled_cell_size', 'game_style'):
+                    fields[name] = NOT_APPLICABLE
             request = _scene(rng, game, category if negative else None, config['desktop_fraction'],
                              display_scale=config['display_scale'], desktop_appearance=config['desktop_appearance'])
+            fields['source_mode'] = request['mode']
+            if request['mode'] == 'desktop':
+                screen, desktop = request['screen'], request['desktop']
+                fields.update(display_scale=screen.get('scale', 1.0), shell=desktop['shell'],
+                              desktop_style=desktop['style'], color_scheme=desktop['color_scheme'],
+                              screen_width=_diagnostic_call(fixed_bucket, screen['width'], BINS['dimension']),
+                              screen_height=_diagnostic_call(fixed_bucket, screen['height'], BINS['dimension']))
+            else:
+                for name in ('display_scale', 'shell', 'desktop_style', 'color_scheme', 'screen_width', 'screen_height'):
+                    fields[name] = NOT_APPLICABLE
+            if game:
+                scale = request['screen'].get('scale', 1.0) if request['mode'] == 'desktop' else 1.0
+                zoom = game['appearance'].get('zoom')
+                factors['effective_native_scale'] = zoom * scale if zoom is not None else None
             if request['mode'] == 'game' and config['standalone_source_budget'] is not None:
+                stage = 'standalone_fitting'
                 _fit_standalone_game(game, config['standalone_source_budget'])
+                fitting['standalone_budget_fitted'] = sampled_cell_size > game['appearance']['cell_size']
+            stage = 'render'
             image, resolved, annotations = render_scene(request, details=('scene',), wallpaper_assets={})
             boards = annotations['boards']
+            if game and request['mode'] == 'desktop' and boards:
+                fitting['desktop_placement_fitted'] = boards[0]['requested_cell_size'] > boards[0]['resolved_cell_size']
             if negative:
                 if boards:
                     raise ValueError('negative scene unexpectedly contains a grid')
@@ -283,7 +339,9 @@ def _generate_one(task):
                 board = boards[0]
                 if board['board_id'] in excluded:
                     retries['identity_overlap'] += 1
+                    _diagnostic_call(attempts.observe, fields, attempted_boards, 'rejected', 'identity_overlap', fitting)
                     continue
+                stage = 'crop'
                 source_geometry = _geometry(board)
                 sx = desired_pitch / source_geometry.pitch_x
                 sy = sx * aspect
@@ -302,15 +360,22 @@ def _generate_one(task):
                                   crop[1] < top < crop[3], crop[1] < bottom < crop[3]))
                 if side_count != {'complete': 4, 'interior': 0, 'side': 1, 'corner': 2}[category]:
                     raise ValueError('actual crop category differs from requested category')
+            _diagnostic_call(attempts.observe, fields, attempted_boards, 'accepted', fitting=fitting)
             break
         except ValidationError:
             raise
         except (PlacementError, ValueError) as exc:
             error = exc
             retries['sampling_or_placement'] += 1
+            if stage == 'standalone_fitting': fitting['standalone_fitting_stage_rejected'] = True
+            elif stage == 'crop': fitting['crop_stage_rejected'] = True
+            elif stage == 'render' and fields['source_mode'] == 'desktop' and isinstance(exc, PlacementError):
+                fitting['desktop_render_placement_rejected'] = True
+            attempts.observe(fields, attempted_boards, 'rejected', 'sampling_or_placement', fitting)
     else:
         raise RuntimeError(f'could not generate {split}/{sample_id} after {config["max_attempts"]} attempts: {error}') from error
 
+    attempts.finish_sample(attempt + 1, objective)
     source_size = image.size
     source_desktop = _desktop_metadata(request, resolved) if request['mode'] == 'desktop' else None
     width, height = config['input_size']
@@ -431,6 +496,8 @@ def _generate_one(task):
     folder = Path(task['root']) / split
     image.save(folder / f'{sample_id}.png', compress_level=config['png_compression'])
     _write_json(folder / f'{sample_id}.json', metadata)
+    if task.get('collect_attempt_diagnostics', False):
+        return {'record': metadata, 'attempt_diagnostics': attempts}
     return metadata
 
 
@@ -483,6 +550,8 @@ def generate_dataset(destination, config=GenerationConfig()):
     ids_by_split = {}
     statistics = {}
     accepted = AcceptedStatistics(config.standalone_source_budget)
+    attempt_overall = AttemptCounters()
+    attempt_splits = {}
     pool = (ProcessPoolExecutor(max_workers=config.workers, mp_context=multiprocessing.get_context('spawn'))
             if config.workers > 1 and (config.train or config.val or config.test) else nullcontext(None))
     with tempfile.TemporaryDirectory(prefix='phase-identities-') as temporary, pool as executor:
@@ -490,7 +559,8 @@ def generate_dataset(destination, config=GenerationConfig()):
             for split, count in (('train', config.train), ('val', config.val), ('test', config.test)):
                 exclusion = Path(temporary) / f'{split}.json'
                 _write_json(exclusion, sorted(all_ids))
-                base = {'root': str(root), 'config': settings, 'split': split, 'excluded_path': str(exclusion)}
+                base = {'root': str(root), 'config': settings, 'split': split, 'excluded_path': str(exclusion),
+                        'collect_attempt_diagnostics': True}
                 tasks = ({**base, 'index': index} for index in range(count))
                 group = {key: Counter() for key in ('category', 'style', 'requested_pitch_bin', 'actual_pitch_bin_x', 'actual_pitch_bin_y', 'board_dimensions', 'visibility', 'negative_source', 'game_progress_category', 'context_type', 'requested_context', 'padding_type')}
                 identities = set(); retries = Counter(); samples = 0
@@ -499,7 +569,8 @@ def generate_dataset(destination, config=GenerationConfig()):
                 start_split = perf_counter()
                 bar_context = tqdm(total=count, desc=split, unit='sample') if config.progress and count else nullcontext(None)
                 with bar_context as bar:
-                    for record in _ordered_results(tasks, executor, config.workers):
+                    for worker_result in _ordered_results(tasks, executor, config.workers):
+                        record = worker_result['record']
                         accepted.add(record)
                         fraction_records.append({key: record[key] for key in ('category', 'actual_pitch_bin_x',
                             'grid_coverage_fraction', 'phase_supervision_fraction', 'grid_occupancy_fraction', 'padding_fraction')})
@@ -513,6 +584,8 @@ def generate_dataset(destination, config=GenerationConfig()):
                             if board_id in all_ids:
                                 raise RuntimeError('cross-split minefield identity overlap')
                             identities.add(board_id)
+                        attempt_overall.merge(worker_result['attempt_diagnostics'])
+                        attempt_splits.setdefault(split, AttemptCounters()).merge(worker_result['attempt_diagnostics'])
                         for key in group:
                             if record[key] is not None:
                                 group[key][str(record[key])] += 1
@@ -536,7 +609,9 @@ def generate_dataset(destination, config=GenerationConfig()):
                     'retries': dict(retries), 'sampling_fractions': summarize_fractions(fraction_records), 'duration_seconds': elapsed, 'samples_per_second': samples / elapsed if elapsed else 0.}
     overlap = {f'{a}:{b}': len(ids_by_split[a] & ids_by_split[b]) for a, b in (('train', 'val'), ('train', 'test'), ('val', 'test'))}
     result = {'splits': statistics, 'board_identity_overlap': overlap, 'duration_seconds': perf_counter() - started,
-              'accepted': accepted.result({'train': config.train, 'val': config.val, 'test': config.test})}
+              'accepted': accepted.result({'train': config.train, 'val': config.val, 'test': config.test}),
+              'attempts': summaries(attempt_overall, attempt_splits, ('train', 'val', 'test'),
+                                    unit='one geometry source attempt for a fixed objective')}
     _write_json(root / 'statistics.json', result)
     metadata['status'] = 'complete'
     _write_json(root / 'config.json', metadata)

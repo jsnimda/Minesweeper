@@ -19,6 +19,8 @@ from synthetic_scenes.render import PlacementError, render_scene
 from synthetic_scenes.minesweeper.styles import THEMES
 from synthetic_scenes.provenance import asset_inventory, run_provenance
 from synthetic_scenes.wallpaper import PROCEDURAL_SUBTYPE_WEIGHTS
+from synthetic_scenes.attempt_statistics import AttemptCounters, NOT_APPLICABLE, board_factors, fixed_bucket, summaries
+from synthetic_scenes.dataset_statistics import BINS
 from .sampler import sample_scene
 from .sampling_config import SAMPLING_CONFIG
 from .yolo import YOLO_CLASSES, write_yolo_config, yolo_lines
@@ -56,31 +58,93 @@ def _excluded_for_split(path):
     return _worker_excluded
 
 
+def _attempt_observations(metadata, request):
+    data = dict(metadata.get('attempt', {}))
+    if 'resolution_group' in metadata:
+        data.setdefault('resolution_group', metadata['resolution_group'])
+    if request is not None:
+        data.setdefault('scene_mode', request['mode'])
+        games = [w['content'] for w in request['windows'] if w['type'] == 'minesweeper']
+        data.setdefault('game_count', len(games))
+        if 'boards' not in data:
+            sampled = metadata.get('sampled_cell_sizes', ())
+            data['boards'] = [
+                {'rows': game.get('rows'), 'columns': game.get('columns'),
+                 'appearance': {'style': game.get('appearance', {}).get('style'),
+                                'zoom': game.get('appearance', {}).get('zoom'),
+                                'cell_size': sampled[index] if index < len(sampled) else None}}
+                for index, game in enumerate(games)]
+        if request['mode'] == 'desktop':
+            data.setdefault('display_scale', request['screen'].get('scale', 1.0))
+            data.setdefault('screen_width', request['screen']['width'])
+            data.setdefault('screen_height', request['screen']['height'])
+            for field, key in (('shell', 'shell'), ('desktop_style', 'style'), ('color_scheme', 'color_scheme')):
+                data.setdefault(field, request['desktop'].get(key))
+            data.setdefault('cleanliness', request.get('cleanliness'))
+            data.setdefault('application_count', sum(w['type'] != 'minesweeper' for w in request['windows']))
+    mode = data.get('scene_mode')
+    desktop_fields = ('resolution_group', 'display_scale', 'shell', 'desktop_style', 'color_scheme', 'cleanliness', 'application_count')
+    fields = {'scene_mode': mode, 'game_count': data.get('game_count'),
+              'composition': ('negative' if data['game_count'] == 0 else 'positive') if data.get('game_count') is not None else None}
+    for name in desktop_fields:
+        fields[name] = NOT_APPLICABLE if mode in ('game', 'grid') else data.get(name)
+    for axis in ('screen_width', 'screen_height'):
+        fields[axis] = NOT_APPLICABLE if mode in ('game', 'grid') else fixed_bucket(data.get(axis), BINS['dimension'])
+    boards = []
+    for game in data.get('boards', []):
+        factors = board_factors(game)
+        zoom = game.get('appearance', {}).get('zoom')
+        scale = 1.0 if mode in ('game', 'grid') else data.get('display_scale')
+        factors['effective_native_scale'] = zoom * scale if zoom is not None and scale is not None else None
+        boards.append(factors)
+    return fields, boards
+
+
 def _generate_one(task):
     """Render one accepted scene and optionally encode/export in this process."""
     split, index, seed = task['split'], task['index'], task['seed']
     excluded = _excluded_for_split(task['excluded_path'])
     retries = Counter()
+    attempts = AttemptCounters()
     for attempt in range(task['max_attempts']):
         scene_seed = f'{seed}:{split}:{index}:{attempt}:scene'
+        sampling_metadata = {}
+        request = None
+        fitting = {}
         try:
-            sampling_metadata = {}
             request = sample_scene(scene_seed, sampling_metadata=sampling_metadata)
             image, resolved, annotations = render_scene(
                 request, details=('scene',), wallpaper_assets=_worker_assets)
         except PlacementError as exc:
             retries['placement_retries'] += 1
             last_error = exc
+            fields, boards = _attempt_observations(sampling_metadata, request)
+            if request is None and fields['scene_mode'] in ('game', 'grid'):
+                fitting['standalone_budget_infeasible'] = True
+            elif request is None and fields['scene_mode'] == 'desktop':
+                fitting['desktop_precheck_rejected'] = True
+            attempts.observe(fields, boards, 'rejected', 'placement_retries', fitting)
             continue
+        if request['mode'] in ('game', 'grid') and 'sampled_cell_sizes' in sampling_metadata:
+            games = [w['content'] for w in request['windows'] if w['type'] == 'minesweeper']
+            fitting['standalone_budget_fitted'] = any(
+                size > game['appearance']['cell_size'] for size, game in zip(
+                    sampling_metadata['sampled_cell_sizes'], games, strict=True))
         board_ids = [board['board_id'] for board in annotations['boards']]
+        fields, boards = _attempt_observations(sampling_metadata, request)
+        if request['mode'] == 'desktop' and boards:
+            fitting['desktop_placement_fitted'] = any(board['requested_cell_size'] > board['resolved_cell_size'] for board in annotations['boards'])
         if not excluded.isdisjoint(board_ids):
             retries['minefield_overlap_retries'] += 1
             last_error = ValueError('Minefield overlaps an earlier split')
+            attempts.observe(fields, boards, 'rejected', 'minefield_overlap_retries', fitting)
             continue
+        attempts.observe(fields, boards, 'accepted', fitting=fitting)
         break
     else:
         raise RuntimeError(f'Failed to generate {split} scene {index}') from last_error
 
+    attempts.finish_sample(attempt + 1)
     native_size = image.size
     native_boxes = [board['boxes']['grid'] for board in annotations['boards']]
     if task['augment']:
@@ -147,7 +211,7 @@ def _generate_one(task):
     if task['scene_details']:
         record['resolved_scene'] = resolved
     pixels = image.width * image.height
-    return {'record': record, 'pixels': pixels, 'encoded_bytes': encoded_bytes,
+    return {'record': record, 'pixels': pixels, 'encoded_bytes': encoded_bytes, 'attempt_diagnostics': attempts,
             'retries': dict(retries), 'mode': request['mode'],
             'styles': [board['style'] for board in annotations['boards']],
             'wallpaper': request['wallpaper']['category'] if request['mode'] == 'desktop' else None,
@@ -187,6 +251,8 @@ def run_splits(counts, *, seed, workers, png_compression, augment, max_attempts,
     excluded = set()
     statistics = {}
     accepted = AcceptedStatistics()
+    attempt_overall = AttemptCounters()
+    attempt_splits = {}
     pool = (ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context('spawn'),
                                 initializer=_initialize_worker, initargs=(assets,))
             if workers > 1 and any(count for _, count in counts) else nullcontext(None))
@@ -222,6 +288,9 @@ def run_splits(counts, *, seed, workers, png_compression, augment, max_attempts,
                         ids = record['board_ids']
                         if not excluded.isdisjoint(ids):
                             raise RuntimeError('Worker accepted a minefield from an earlier split')
+                        if mode == 'export':
+                            attempt_overall.merge(result['attempt_diagnostics'])
+                            attempt_splits.setdefault(split, AttemptCounters()).merge(result['attempt_diagnostics'])
                         current_ids.update(ids)
                         totals.update(result['retries'])
                         totals['scenes'] += 1
@@ -248,6 +317,8 @@ def run_splits(counts, *, seed, workers, png_compression, augment, max_attempts,
         statistics['accepted'] = accepted.result({'train': dict(counts).get('train', 0),
                                                    'val': dict(counts).get('val', 0),
                                                    'test': dict(counts).get('test', 0)})
+        statistics['attempts'] = summaries(attempt_overall, attempt_splits, ('train', 'val', 'test'),
+                                          unit='one complete detection scene sampling attempt')
     return statistics
 
 

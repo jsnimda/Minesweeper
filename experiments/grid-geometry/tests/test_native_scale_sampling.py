@@ -3,6 +3,7 @@ from copy import deepcopy
 from dataclasses import asdict
 import json
 import random
+from pathlib import Path
 
 import pytest
 
@@ -268,3 +269,123 @@ def test_desktop_style_policy_and_valid_sources():
                    'wallpaper': {'category': 'procedural', 'seed': seed}}
         SceneSpec.model_validate(request)
         assert desktop == sampler._desktop(random.Random(seed))
+
+
+def test_attempt_diagnostics_preserve_objective_and_render_count(monkeypatch, tmp_path):
+    import synthetic_scenes.render as rendering
+    sampled = []; calls = []
+    def sample_game(rng, category, pitch, size, **kwargs):
+        sampled.append((category, pitch))
+        return _game(24, .75 if len(sampled) == 1 else 1.25), 'hidden'
+    monkeypatch.setattr(generator, '_game', sample_game)
+    monkeypatch.setattr(generator, '_scene', _small_scene)
+    original = rendering.render_scene
+    def render(request, **kwargs):
+        calls.append(1)
+        if len(calls) == 1: raise rendering.PlacementError('first attempt')
+        return original(request, **kwargs)
+    monkeypatch.setattr(rendering, 'render_scene', render)
+    task = _task(tmp_path, _config(desktop_fraction=0., max_attempts=3))
+    task['collect_attempt_diagnostics'] = True
+    output = generator._generate_one(task)
+    summary = output['attempt_diagnostics'].result()
+    assert len(sampled) == len(calls) == 2 and sampled[0] == sampled[1]
+    assert summary['attempted'] == 2 and summary['accepted'] == summary['rejected'] == 1
+    assert summary['by']['game_zoom']['0.75']['rejected'] == 1
+    assert summary['by']['game_zoom']['1.25']['accepted'] == 1
+    objective = summary['objectives']['by']['category']['complete']
+    assert objective['selected'] == 1 and objective['source_attempts'] == 2
+    assert output['record']['requested_pitch'] == sampled[0][1]
+
+
+def test_identity_conflict_is_one_rejected_source_attempt(monkeypatch, tmp_path):
+    import synthetic_scenes.render as rendering
+    monkeypatch.setattr(generator, '_game', lambda *args, **kwargs: (_game(), 'hidden'))
+    monkeypatch.setattr(generator, '_scene', _small_scene)
+    original = rendering.render_scene
+    calls = []
+    def render(request, **kwargs):
+        image, resolved, annotations = original(request, **kwargs)
+        calls.append(1)
+        if len(calls) == 1:
+            annotations['boards'][0]['board_id'] = 'excluded'
+        return image, resolved, annotations
+    monkeypatch.setattr(rendering, 'render_scene', render)
+    task = _task(tmp_path, _config(desktop_fraction=0.))
+    task['collect_attempt_diagnostics'] = True
+    Path(task['excluded_path']).write_text('["excluded"]')
+    output = generator._generate_one(task)
+    diagnostics = output['attempt_diagnostics'].result()
+    assert diagnostics['rejection_reasons'] == {'identity_overlap': 1}
+    assert diagnostics['attempted'] == 2 and diagnostics['accepted'] == 1
+
+
+def test_budget_fitting_failure_is_counted_without_extra_render(monkeypatch, tmp_path):
+    import synthetic_scenes.render as rendering
+    monkeypatch.setattr(generator, '_game', lambda *args, **kwargs: (_game(), 'hidden'))
+    monkeypatch.setattr(generator, '_scene', _small_scene)
+    original_fit = generator._fit_standalone_game
+    fits = []; renders = []
+    def fit(game, budget):
+        fits.append(1)
+        if len(fits) == 1: raise ValueError('forced budget fitting failure')
+        return original_fit(game, budget)
+    original_render = rendering.render_scene
+    def render(*args, **kwargs):
+        renders.append(1)
+        return original_render(*args, **kwargs)
+    monkeypatch.setattr(generator, '_fit_standalone_game', fit)
+    monkeypatch.setattr(rendering, 'render_scene', render)
+    task = _task(tmp_path, _config(desktop_fraction=0., max_attempts=3))
+    task['collect_attempt_diagnostics'] = True
+    output = generator._generate_one(task)
+    diag = output['attempt_diagnostics'].result()
+    assert len(fits) == 2 and len(renders) == 1
+    assert diag['rejection_reasons'] == {'sampling_or_placement': 1}
+    assert diag['fitting_observations']['standalone_fitting_stage_rejected_yes'] == 1
+    assert diag['fitting_observations']['standalone_budget_fitted_no'] == 1
+
+
+def test_crop_failure_has_one_terminal_rejection(monkeypatch, tmp_path):
+    monkeypatch.setattr(generator, '_game', lambda *args, **kwargs: (_game(), 'hidden'))
+    monkeypatch.setattr(generator, '_scene', _small_scene)
+    original = generator._crop_box
+    calls = []
+    def crop(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1: raise ValueError('forced crop failure')
+        return original(*args, **kwargs)
+    monkeypatch.setattr(generator, '_crop_box', crop)
+    task = _task(tmp_path, _config(desktop_fraction=0., max_attempts=3))
+    task['collect_attempt_diagnostics'] = True
+    output = generator._generate_one(task)
+    diag = output['attempt_diagnostics'].result()
+    assert len(calls) == 2 and diag['attempted'] == 2
+    assert diag['accepted'] == diag['rejected'] == 1
+    assert diag['fitting_observations']['crop_stage_rejected_yes'] == 1
+
+
+def test_attempt_finalization_failure_keeps_dataset_incomplete(monkeypatch, tmp_path):
+    import synthetic_scenes.provenance as provenance
+    monkeypatch.setattr(provenance, 'run_provenance', lambda *args: {'source': {'commit': 'kept'}})
+    def fail(*args, **kwargs): raise RuntimeError('attempt finalization failed')
+    monkeypatch.setattr(generator, 'summaries', fail)
+    with pytest.raises(RuntimeError, match='attempt finalization failed'):
+        generator.generate_dataset(tmp_path / 'dataset', GenerationConfig(train=0, val=0, test=0, progress=False))
+    config = json.loads((tmp_path / 'dataset' / 'config.json').read_text())
+    assert config['status'] == 'incomplete' and config['provenance']['source']['commit'] == 'kept'
+
+
+def test_diagnostic_error_does_not_become_sampling_retry(monkeypatch, tmp_path):
+    calls = []
+    def sample_game(*args, **kwargs):
+        calls.append(1)
+        return _game(), 'hidden'
+    def fail(*args, **kwargs):
+        raise ValueError('broken diagnostic')
+    monkeypatch.setattr(generator, '_game', sample_game)
+    monkeypatch.setattr(generator, 'board_factors', fail)
+    task = _task(tmp_path, _config(desktop_fraction=0., max_attempts=3))
+    with pytest.raises(RuntimeError, match='attempt diagnostics failed') as error:
+        generator._generate_one(task)
+    assert isinstance(error.value.__cause__, ValueError) and len(calls) == 1

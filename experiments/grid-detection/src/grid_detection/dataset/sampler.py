@@ -299,6 +299,8 @@ def sample_scene(seed: int | str = 42, *, sampling_metadata: dict | None = None)
     display_policy = _display_scale_policy()
     _validate_desktop_sampling()
     mode = choose(rng, SAMPLING_CONFIG["scene_mode"])
+    if sampling_metadata is not None:
+        sampling_metadata['attempt'] = {'scene_mode': mode}
     if mode == "desktop":
         resolution_group, (width, height) = choose_group(rng, SAMPLING_CONFIG["resolution"])
         if sampling_metadata is not None:
@@ -308,12 +310,22 @@ def sample_scene(seed: int | str = 42, *, sampling_metadata: dict | None = None)
         display_scale = sample_scale(rng, scale_weights)
         desktop = sample_desktop(rng)
         game_count = choose(rng, SAMPLING_CONFIG["game_count"])
+        if sampling_metadata is not None:
+            sampling_metadata['attempt'].update(resolution_group=resolution_group, screen_width=width,
+                screen_height=height, display_scale=display_scale, shell=desktop['shell'],
+                desktop_style=desktop['style'], color_scheme=desktop['color_scheme'])
     else:
         game_count = 1
 
+    if sampling_metadata is not None:
+        sampling_metadata['attempt']['game_count'] = game_count
     windows = [{"type": "minesweeper", "content": sample_game(rng)}
                for _ in range(game_count)]
     if sampling_metadata is not None:
+        sampling_metadata['attempt']['boards'] = [
+            {'rows': w['content']['rows'], 'columns': w['content']['columns'],
+             'appearance': {key: w['content']['appearance'].get(key) for key in ('style', 'cell_size', 'zoom')}}
+            for w in windows]
         sampling_metadata["sampled_cell_sizes"] = [
             window["content"]["appearance"]["cell_size"] for window in windows
         ]
@@ -329,6 +341,8 @@ def sample_scene(seed: int | str = 42, *, sampling_metadata: dict | None = None)
         extra_count = choose(rng, SAMPLING_CONFIG["extra_window_count"][cleanliness])
         windows.extend({"type": choose(rng, SAMPLING_CONFIG["application"]), "seed": rng.getrandbits(64)}
                        for _ in range(extra_count))
+        if sampling_metadata is not None:
+            sampling_metadata['attempt'].update(cleanliness=cleanliness, application_count=extra_count)
         category = choose(rng, SAMPLING_CONFIG["wallpaper_type"])
         wallpaper = {"category": category, "seed": rng.getrandbits(64)}
         if category != "procedural":
