@@ -78,8 +78,19 @@ def test_mode_and_window_requirements():
                   desktop_scene([{'type': 'other', 'seed': 1}])):
         with pytest.raises(ValidationError):
             SceneSpec.model_validate(scene)
+
+
+@pytest.mark.parametrize('scale', [1, 0.5, 1.5, 2])
+def test_display_scale_accepts_positive_finite_numbers(scale):
     scene = desktop_scene()
-    scene['screen']['scale'] = 1.5
+    scene['screen']['scale'] = scale
+    assert SceneSpec.model_validate(scene).screen.scale == scale
+
+
+@pytest.mark.parametrize('scale', [True, False, '1', 0, -1, float('nan'), float('inf'), -float('inf')])
+def test_display_scale_rejects_invalid_values(scale):
+    scene = desktop_scene()
+    scene['screen']['scale'] = scale
     with pytest.raises(ValidationError):
         SceneSpec.model_validate(scene)
 
@@ -189,10 +200,10 @@ def test_omitted_and_explicit_none_layout_seeds_remain_distinct(monkeypatch):
     original_plan = renderer.plan_game_windows
     seeds = []
 
-    def capture_plan(games, size, desktop, seed):
+    def capture_plan(games, size, desktop, seed, scale=1.0):
         seeds.append(seed)
         # Fix placement for this check while recording the renderer's argument.
-        return original_plan(games, size, desktop, 7)
+        return original_plan(games, size, desktop, 7, scale)
 
     monkeypatch.setattr(renderer, 'plan_game_windows', capture_plan)
     scene = desktop_scene([])

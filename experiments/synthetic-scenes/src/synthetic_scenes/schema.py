@@ -25,10 +25,15 @@ class SceneModel(BaseModel):
 
 
 class ScreenSpec(SceneModel):
-    # Screenshot dimensions are physical pixels. Only unit scale is supported.
+    # Screenshot dimensions are physical pixels.
     width: Annotated[StrictInt, Field(ge=320)]
     height: Annotated[StrictInt, Field(ge=240)]
-    scale: Literal[1, 1.0] = 1.0
+    scale: StrictFloat = 1.0
+
+    @field_validator('scale', mode='before')
+    @classmethod
+    def check_scale(cls, value):
+        return validate_zoom(value)
 
 
 class DesktopSpec(SceneModel):
@@ -223,6 +228,8 @@ class BoardAnnotation(TypedDict):
     requested_cell_size: NotRequired[int]
     resolved_cell_size: NotRequired[int]
     requested_zoom: NotRequired[float]
+    requested_display_scale: NotRequired[float]
+    requested_effective_scale: NotRequired[float]
     coordinate_space: NotRequired[str]
     grid_origin: NotRequired[tuple[float, float]]
     window_box: NotRequired[Box]

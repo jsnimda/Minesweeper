@@ -6,7 +6,9 @@ from dataclasses import dataclass
 
 import skia
 
-from .desktop import draw_desktop
+from .desktop import draw_desktop_components
+from .desktop_components.geometry import component_geometry
+from .scaling import pixels
 from .generic_window import (
     Box,
     draw_generic_window,
@@ -21,28 +23,29 @@ class WindowLayer:
     position: tuple[int, int]
     title: str = "Application"
     menu_items: tuple[str, ...] = ()
+    allow_clipping: bool = False
 
 
 def _work_area(
     size: tuple[int, int],
     desktop: dict,
+    scale: float = 1.0,
 ) -> Box:
     """Conservative window placement area for each shell."""
     w, h = size
     shell = desktop["shell"]
+    geometry = component_geometry(size, desktop, scale)
 
     if shell == "taskbar":
-        bottom_reserved = (
-            44 if desktop["style"] == "classic" else 48
-        )
-        return (0, 0, w, h - bottom_reserved)
+        extra = pixels(8, scale) if desktop["style"] == "classic" else 0
+        return (0, 0, w, geometry['taskbar'][1] - extra)
 
     if shell == "dock":
         # Top menu bar and floating bottom dock.
-        return (0, 32, w, h - 104)
+        return (0, geometry['status_bar'][3], w, geometry['dock'][1] - pixels(14, scale))
 
     if shell == "top_panel":
-        return (0, 36, w, h)
+        return (0, geometry['top_panel'][3], w, h)
 
     raise ValueError(f"Unknown shell: {shell}")
 
@@ -52,16 +55,19 @@ def compose_screenshot(
     size: tuple[int, int],
     desktop: dict,
     windows: Sequence[WindowLayer],
+    *,
+    scale: float = 1.0,
 ) -> tuple[skia.Image, list[dict[str, Box]]]:
     """Return a Skia screenshot and per-window screen boxes.
 
     Window positions and bounding boxes use integer,
     half-open pixel coordinates.
 
-    Window clipping is not supported; background windows may overlap.
+    Layers marked allow_clipping may extend beyond the work area and surface;
+    the surface clips them. Background windows may overlap.
     """
     width, height = size
-    available = _work_area(size, desktop)
+    available = _work_area(size, desktop, scale)
 
     # Validate everything before drawing.
     for window in windows:
@@ -70,14 +76,17 @@ def compose_screenshot(
             (window.content_image.width(), window.content_image.height()),
             window.menu_items,
             style=desktop["style"],
+            scale=scale,
         )
 
         extent = (x, y, x + w, y + h)
 
-        if not (
+        contained = (
             available[0] <= x < x + w <= available[2]
             and available[1] <= y < y + h <= available[3]
-        ):
+        )
+        visible_origin = available[0] <= x < available[2] and available[1] <= y < available[3]
+        if not contained and not (window.allow_clipping and visible_origin):
             raise ValueError(
                 f"Window outside available area: {extent}"
             )
@@ -85,12 +94,11 @@ def compose_screenshot(
     # One surface shared by the desktop and all windows.
     surface = skia.Surface(width, height)
 
-    draw_desktop(
-        surface=surface,
-        wallpaper=wallpaper,
-        size=size,
-        desktop=desktop,
-    )
+    if width < 320 or height < 240:
+        raise ValueError("Desktop resolution is too small")
+    if (wallpaper.width(), wallpaper.height()) != size:
+        raise ValueError("Wallpaper must already match desktop dimensions")
+    surface.getCanvas().drawImage(wallpaper, 0, 0)
 
     annotations = []
 
@@ -103,7 +111,10 @@ def compose_screenshot(
             title=window.title,
             menu_items=window.menu_items,
             desktop=desktop,
+            scale=scale,
         )
         annotations.append(boxes)
+
+    draw_desktop_components(surface, size, desktop, scale=scale)
 
     return surface.makeImageSnapshot(), annotations

@@ -10,8 +10,7 @@ import importlib
 from itertools import chain
 import json
 import random
-
-import skia
+import sys
 
 from PIL import Image, ImageOps
 
@@ -35,6 +34,11 @@ APPLICATIONS = {
 
 class PlacementError(ValueError):
     """A valid scene could not be packed into the desktop work area."""
+
+
+def _drawing_scale(zoom, display_scale):
+    # Underflow still represents a positive scale and reaches both drawing minima.
+    return max(sys.float_info.min, zoom * display_scale)
 
 
 def _wallpaper(size, spec, assets=None):
@@ -76,12 +80,17 @@ def _wallpaper(size, spec, assets=None):
     return pillow_to_image(image), {'category': category, 'seed': spec['seed'], 'asset': str(path), 'placement': placement, **actual}
 
 
-def plan_game_windows(games, size, desktop, seed):
+def plan_game_windows(games, size, desktop, seed, scale=1.0):
     """Measure and pack complete game windows within the desktop work area.
 
     Return per-window positions and effective cell sizes, or raise PlacementError.
     """
-    left, top, right, bottom = _work_area(size, desktop)
+    try:
+        left, top, right, bottom = _work_area(size, desktop, scale)
+    except OverflowError:
+        raise PlacementError('Display scale leaves no usable work area') from None
+    if right <= left or bottom <= top:
+        raise PlacementError('Display scale leaves no usable work area')
     rng = random.Random(seed)
     for attempt in range(60):
         items = []
@@ -94,11 +103,16 @@ def plan_game_windows(games, size, desktop, seed):
                 content_size = measure_game_region(
                     spec['rows'], spec['columns'],
                     spec['appearance'].get('style', 'classic'), cell,
-                    spec['appearance'].get('zoom', 1.0),
+                    _drawing_scale(spec['appearance'].get('zoom', 1.0), scale),
                 )
+                w, h = window_size(content_size, style=desktop['style'], scale=scale)
             except OverflowError:
-                raise PlacementError('Zoomed game cannot fit the work area') from None
-            w, h = window_size(content_size, style=desktop['style'])
+                raise PlacementError('Scaled game cannot fit the work area') from None
+            except ValueError as exc:
+                # A product of finite positive scales may overflow to infinity.
+                if str(exc) == 'zoom must be a positive finite number':
+                    raise PlacementError('Scaled game cannot fit the work area') from None
+                raise
             items.append((index, w, h, cell))
         placed = []
         for index, w, h, cell in sorted(items, key=lambda item: item[1]*item[2], reverse=True):
@@ -156,17 +170,16 @@ def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> t
         raise ValueError('Game and grid modes require exactly one game')
     seed = specification['seed']
     resolved = deepcopy(specification) if scene_details else {'mode': mode, 'seed': seed}
+    display_scale = specification['screen'].get('scale', 1.0) if mode == 'desktop' else 1.0
     if mode == 'desktop':
         size = (specification['screen']['width'], specification['screen']['height'])
-        if specification['screen'].get('scale', 1) != 1:
-            raise ValueError('Display scaling is not supported')
         desktop = {'accent_color': None, **specification['desktop']}
-        plan = plan_game_windows(games, size, desktop, specification.get('layout_seed', seed))
+        plan = plan_game_windows(games, size, desktop, specification.get('layout_seed', seed), display_scale)
         wallpaper, wallpaper_info = _wallpaper(size, specification['wallpaper'], wallpaper_assets)
         if scene_details:
             resolved['resolved_wallpaper'] = wallpaper_info
             resolved['layout'] = []
-        left, top, right, bottom = _work_area(size, desktop)
+        left, top, right, bottom = _work_area(size, desktop, display_scale)
         layers, board_info = [], []
         # Applications are always behind protected games.
         for index, window in enumerate(windows):
@@ -176,26 +189,27 @@ def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> t
             if kind not in APPLICATIONS:
                 raise ValueError(f'Unknown application: {kind}')
             module = importlib.import_module(f'.desktop_rendering.applications.{kind}', __package__)
-            content, _ = getattr(module, f'render_{kind}')(seed=window['seed'])
+            render_application = getattr(module, f'render_{kind}')
+            # Check unusually large intermediate surfaces before allocating them.
+            # The fixed logical defaults are owned by each application renderer.
+            if display_scale > 4:
+                logical, _ = render_application(seed=window['seed'], scale=1.0)
+                try:
+                    physical_width = round(logical.width() * display_scale)
+                    physical_height = round(logical.height() * display_scale)
+                except OverflowError:
+                    raise PlacementError('Application surface is too large') from None
+                if (max(physical_width, physical_height) > 32767 or
+                        physical_width * physical_height > 64_000_000):
+                    raise PlacementError('Application surface is too large')
+            content, _ = render_application(seed=window['seed'], scale=display_scale)
             content_size = (content.width(), content.height())
-            w, h = window_size(content_size, style=desktop['style'])
-            if w > right-left or h > bottom-top:
-                (overhead_w, overhead_h), _ = window_geometry((1, 1), style=desktop['style'])
-                max_width = right-left-(overhead_w-1)
-                max_height = bottom-top-(overhead_h-1)
-                if min(max_width, max_height) < 1:
-                    raise PlacementError('Application does not fit work area')
-                scale = min(max_width/content.width(), max_height/content.height())
-                target = (max(1, round(content.width()*scale)), max(1, round(content.height()*scale)))
-                resized = skia.Surface(*target)
-                resized.getCanvas().drawImageRect(
-                    content, skia.Rect.MakeWH(*target),
-                    skia.SamplingOptions(skia.CubicResampler.Mitchell()))
-                content = resized.makeImageSnapshot()
-                w, h = window_size(target, style=desktop['style'])
+            w, h = window_size(content_size, style=desktop['style'], scale=display_scale)
             rng = random.Random(window['seed'])
-            position = (rng.randint(left, right-w), rng.randint(top, bottom-h))
-            layers.append(WindowLayer(content, {}, position, title=kind.replace('_', ' ').title()))
+            position = (rng.randint(left, right-w) if w <= right-left else left,
+                        rng.randint(top, bottom-h) if h <= bottom-top else top)
+            layers.append(WindowLayer(content, {}, position, title=kind.replace('_', ' ').title(),
+                                      allow_clipping=True))
             if scene_details:
                 resolved['layout'].append({'index': index, 'position': position, 'window_size': (w, h)})
     else:
@@ -208,6 +222,7 @@ def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> t
             seed=game_spec['seed'], elapsed_seconds=game_spec.get('elapsed_seconds', 0), mode='normal')
         options = dict(game_spec['appearance'])
         options['cell_size'] = plan[index]['cell_size']
+        options['zoom'] = _drawing_scale(game_spec['appearance'].get('zoom', 1.0), display_scale)
         options['cell_details'] = cell_details
         visible = get_visible_cells(game)
         content, metadata = (render_board if mode == 'grid' else render_game_region)(
@@ -215,6 +230,8 @@ def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> t
         metadata['requested_cell_size'] = game_spec['appearance'].get('cell_size', 32)
         metadata['resolved_cell_size'] = plan[index]['cell_size']
         metadata['requested_zoom'] = game_spec['appearance'].get('zoom', 1.0)
+        metadata['requested_display_scale'] = display_scale
+        metadata['requested_effective_scale'] = metadata['requested_zoom'] * display_scale
         board = game['board']
         metadata['board_id'] = 'board-' + sha256(json.dumps(board.shape).encode('ascii') + board.tobytes()).hexdigest()
         metadata['game_state_id'] = 'state-' + sha256(metadata['board_id'].encode() + game['status'].encode() + str(game['elapsed_seconds']).encode() + visible.tobytes()).hexdigest()
@@ -223,12 +240,12 @@ def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> t
         if mode == 'desktop':
             x, y, _, _ = plan[index]['box']
             planned_size = (plan[index]['box'][2]-x, plan[index]['box'][3]-y)
-            if window_size((content.width(), content.height()), style=desktop['style']) != planned_size:
+            if window_size((content.width(), content.height()), style=desktop['style'], scale=display_scale) != planned_size:
                 raise RuntimeError('Measurement and rendered dimensions disagree')
             layer = WindowLayer(content, metadata['boxes'], (x, y), title='Minesweeper')
             layers.append(layer)
             _, (offset_x, offset_y) = window_geometry(
-                (content.width(), content.height()), style=desktop['style'])
+                (content.width(), content.height()), style=desktop['style'], scale=display_scale)
             metadata = transform_board(metadata, dx=x+offset_x, dy=y+offset_y)
             metadata['window_box'] = plan[index]['box']
             if scene_details:
@@ -237,7 +254,7 @@ def render_scene(specification: dict, *, details=(), wallpaper_assets=None) -> t
             resolved['layout'] = [{'index': index, 'cell_size': plan[index]['cell_size'], 'content_size': (content.width(), content.height())}]
         board_info.append(metadata)
     if mode == 'desktop':
-        image, _ = compose_screenshot(wallpaper, size, desktop, layers)
+        image, _ = compose_screenshot(wallpaper, size, desktop, layers, scale=display_scale)
     else:
         image = content
     image = image_to_pillow(image)

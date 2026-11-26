@@ -74,6 +74,21 @@ def draw_desktop(
         raise ValueError("Wallpaper must already match desktop dimensions")
     canvas.drawImage(wallpaper, 0, 0)
 
+    draw_desktop_components(surface, size, desktop, scale=scale)
+
+
+def draw_desktop_components(
+    surface: skia.Surface,
+    size: tuple[int, int],
+    desktop: dict,
+    *,
+    scale: float = 1.0,
+) -> None:
+    """Draw the shell over the surface's current backdrop."""
+    shell = desktop["shell"]
+    if shell not in {"taskbar", "dock", "top_panel"}:
+        raise ValueError(f"Unsupported shell: {shell}")
+
     colors = _palette(desktop)
 
     if shell == "taskbar":
