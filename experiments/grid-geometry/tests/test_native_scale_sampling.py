@@ -26,7 +26,7 @@ def _task(tmp_path, config):
             'index': 0, 'excluded_path': str(excluded)}
 
 
-def _small_scene(rng, game, negative_kind=None, desktop_fraction=.8, *, display_scale=None):
+def _small_scene(rng, game, negative_kind=None, desktop_fraction=.8, *, display_scale=None, desktop_appearance=None):
     if game is not None and desktop_fraction == 0:
         return {'mode': 'game', 'seed': 5, 'windows': [{'type': 'minesweeper', 'content': game}]}
     windows = ([{'type': 'minesweeper', 'content': game}] if game is not None else
@@ -47,10 +47,12 @@ def _config(**kwargs):
     return GenerationConfig(**defaults)
 
 
-def test_neutral_defaults_and_singleton_rng():
+def test_scale_defaults_budget_and_singleton_rng():
     config = GenerationConfig()
-    assert config.game_zoom == config.display_scale == {1.0: 1}
-    assert config.standalone_source_budget is None
+    assert config.game_zoom == {.5: 5, .75: 10, 1.: 60, 1.25: 15, 1.5: 8, 2.: 2}
+    assert config.display_scale == {.75: 5, 1.: 55, 1.25: 25, 1.5: 10, 1.75: 3, 2.: 2}
+    assert config.standalone_source_budget == {'max_dimension': 4096, 'max_pixels': 12_000_000}
+    assert GenerationConfig(standalone_source_budget=None).standalone_source_budget is None
     rng = random.Random(4)
     state = rng.getstate()
     assert sampler._sample_scale(rng, {.75: 0, 1.: 3}) == 1.
@@ -207,13 +209,13 @@ def test_disabled_budget_never_fits(monkeypatch, tmp_path):
     monkeypatch.setattr(generator, '_game', lambda *args, **kwargs: (_game(), 'hidden'))
     monkeypatch.setattr(generator, '_scene', _small_scene)
     monkeypatch.setattr(generator, '_fit_standalone_game', lambda *args: pytest.fail('disabled budget was used'))
-    record = generator._generate_one(_task(tmp_path, _config(desktop_fraction=0.)))
+    record = generator._generate_one(_task(tmp_path, _config(desktop_fraction=0., standalone_source_budget=None)))
     assert record['sampled_cell_size'] == record['requested_cell_size'] == record['resolved_cell_size'] == 24
 
 
 @pytest.mark.parametrize('negative_kind', ['negative', 'hard_negative'])
 def test_negative_metadata_retains_display_scale(monkeypatch, tmp_path, negative_kind):
-    def negative_scene(rng, game, kind, desktop_fraction, *, display_scale):
+    def negative_scene(rng, game, kind, desktop_fraction, *, display_scale, desktop_appearance):
         return _small_scene(rng, game, negative_kind, desktop_fraction, display_scale=display_scale)
     monkeypatch.setattr(generator, '_scene', negative_scene)
     record = generator._generate_one(_task(tmp_path, _config(negative_fraction=1., display_scale={1.5: 1})))
@@ -233,25 +235,25 @@ def test_context_desktop_remains_neutral(monkeypatch, tmp_path):
     monkeypatch.setattr(rendering, 'render_scene', capture)
     monkeypatch.setattr(generator, '_game', lambda *args, **kwargs: (_game(), 'hidden'))
     monkeypatch.setattr(generator, '_scene', _small_scene)
-    config = _config(desktop_fraction=0., display_scale={1.5: 1},
+    appearance = deepcopy(GenerationConfig().desktop_appearance)
+    appearance['shell'] = {'top_panel': 1}
+    appearance['shell_styles']['top_panel'] = {'classic': 1}
+    appearance['visibility']['show_top_panel'] = 0
+    config = _config(desktop_fraction=1., display_scale={1.5: 1}, desktop_appearance=appearance,
                      context_weights={'procedural': 0, 'desktop': 1})
     record = generator._generate_one(_task(tmp_path, config))
     assert record['background_visible'] and len(requests) == 2
+    assert requests[0]['screen']['scale'] == 1.5
     assert requests[1]['screen']['scale'] == 1.0
+    assert requests[1]['desktop']['shell'] == 'top_panel'
+    assert requests[1]['desktop']['style'] == 'classic'
+    assert requests[1]['desktop']['show_top_panel'] is False
 
 
-def test_desktop_style_policy_and_valid_sources(monkeypatch):
-    original = sampler._choice
-    sampled_weights = []
-
-    def capture(rng, weights):
-        sampled_weights.append(weights)
-        return original(rng, weights)
-
-    monkeypatch.setattr(sampler, '_choice', capture)
+def test_desktop_style_policy_and_valid_sources():
     for seed in range(100):
         desktop = sampler._desktop(random.Random(seed))
-        assert desktop['shell'] == 'taskbar'
+        assert desktop['shell'] in {'taskbar', 'dock', 'top_panel'}
         assert desktop['style'] in {'modern', 'classic'}
         assert 'taskbar_layout' not in desktop
         request = {'mode': 'desktop', 'seed': seed, 'windows': [],
@@ -259,4 +261,3 @@ def test_desktop_style_policy_and_valid_sources(monkeypatch):
                    'wallpaper': {'category': 'procedural', 'seed': seed}}
         SceneSpec.model_validate(request)
         assert desktop == sampler._desktop(random.Random(seed))
-    assert all(weights == {'modern': 75, 'classic': 25} for weights in sampled_weights)

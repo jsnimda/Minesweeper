@@ -191,7 +191,7 @@ def _generate_one(task):
                 coverage_preference_exponent=config['coverage_preference_exponent'], game_zoom=config['game_zoom'])
             sampled_cell_size = game['appearance']['cell_size'] if game else None
             request = _scene(rng, game, category if negative else None, config['desktop_fraction'],
-                             display_scale=config['display_scale'])
+                             display_scale=config['display_scale'], desktop_appearance=config['desktop_appearance'])
             if request['mode'] == 'game' and config['standalone_source_budget'] is not None:
                 _fit_standalone_game(game, config['standalone_source_budget'])
             image, resolved, annotations = render_scene(request, details=('scene',), wallpaper_assets={})
@@ -264,7 +264,7 @@ def _generate_one(task):
         else:
             context_spec = {'mode': 'desktop', 'seed': context_rng.getrandbits(64),
                 'layout_seed': context_rng.getrandbits(64), 'screen': {'width': max(320, width), 'height': max(240, height), 'scale': 1.0},
-                'desktop': _desktop(context_rng), 'wallpaper': {'category': 'procedural', 'seed': context_rng.getrandbits(64)},
+                'desktop': _desktop(context_rng, config['desktop_appearance']), 'wallpaper': {'category': 'procedural', 'seed': context_rng.getrandbits(64)},
                 'windows': [{'type': context_rng.choice(('browser', 'spreadsheet', 'sudoku', 'other_puzzle')),
                              'seed': context_rng.getrandbits(64)}]}
             background, _, _ = render_scene(context_spec, wallpaper_assets={})

@@ -1,6 +1,7 @@
 """Defaults and validation for phase dataset generation."""
 from dataclasses import dataclass, field
 from collections.abc import Mapping
+from copy import deepcopy
 import math
 
 PITCH_BINS = ((6., 11., .10), (12., 19., .25), (20., 31., .35), (32., 47., .20), (48., 64., .10))
@@ -10,6 +11,78 @@ STYLES = ('classic', 'windows7', 'microsoft', 'google')
 THEMES = {'classic': ('default', 'blue', 'green', 'warm'), 'windows7': ('blue', 'green'),
           'microsoft': ('default', 'blue', 'warm'), 'google': ('default', 'blue', 'warm')}
 NEUTRAL_SCALE = {1.0: 1}
+GAME_ZOOM = {.5: 5, .75: 10, 1.: 60, 1.25: 15, 1.5: 8, 2.: 2}
+DISPLAY_SCALE = {.75: 5, 1.: 55, 1.25: 25, 1.5: 10, 1.75: 3, 2.: 2}
+SOURCE_CELL_SIZE = {'normal': (16, 40), 'large': (12, 22)}
+DESKTOP_APPEARANCE = {
+    'shell': {'taskbar': 70, 'dock': 20, 'top_panel': 10},
+    'shell_styles': {'taskbar': {'modern': 75, 'classic': 25},
+                     'dock': {'modern': 95, 'classic': 5},
+                     'top_panel': {'modern': 80, 'classic': 20}},
+    'color_scheme': {'modern': {'light': 50, 'dark': 50},
+                     'classic': {'default': 70, 'dark': 30}},
+    'visibility': {'show_taskbar': .90, 'show_dock': .85,
+                   'show_status_bar': .95, 'show_top_panel': .95},
+    'dock_height': {'small': {'range': (32, 47), 'weight': 10},
+                    'medium': {'range': (48, 63), 'weight': 25},
+                    'normal': {'range': (64, 80), 'weight': 45},
+                    'large': {'range': (81, 96), 'weight': 15},
+                    'extra_large': {'range': (97, 120), 'weight': 5}},
+}
+
+
+def _weights(weights, allowed, label):
+    if not isinstance(weights, Mapping) or not weights or not set(weights) <= allowed:
+        raise ValueError(f'invalid {label} choices')
+    try:
+        valid = all(type(w) in (int, float) and math.isfinite(w) and w >= 0 for w in weights.values())
+        total = sum(weights.values()) if valid else 0
+        valid = valid and math.isfinite(total) and total > 0
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise ValueError(f'{label} weights must be finite, nonnegative and have a positive total')
+
+
+def validate_desktop_appearance(config):
+    if not isinstance(config, Mapping) or set(config) != {'shell', 'shell_styles', 'color_scheme', 'visibility', 'dock_height'}:
+        raise ValueError('desktop appearance must contain shell, style, color, visibility and dock policies')
+    shells = {'taskbar', 'dock', 'top_panel'}
+    _weights(config['shell'], shells, 'shell')
+    styles = config['shell_styles']
+    if not isinstance(styles, Mapping) or set(styles) != shells:
+        raise ValueError('shell styles must specify every supported shell')
+    for weights in styles.values():
+        _weights(weights, {'modern', 'classic'}, 'shell style')
+    schemes = config['color_scheme']
+    if not isinstance(schemes, Mapping) or set(schemes) != {'modern', 'classic'}:
+        raise ValueError('color schemes must specify both desktop styles')
+    for style, allowed in (('modern', {'light', 'dark'}), ('classic', {'default', 'dark'})):
+        _weights(schemes[style], allowed, 'color scheme')
+    visibility = config['visibility']
+    if not isinstance(visibility, Mapping) or set(visibility) != {'show_taskbar', 'show_dock', 'show_status_bar', 'show_top_panel'}:
+        raise ValueError('visibility must specify every component')
+    for probability in visibility.values():
+        try:
+            valid = type(probability) in (int, float) and math.isfinite(probability) and 0 <= probability <= 1
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise ValueError('visibility probabilities must be finite numbers in 0..1')
+    groups = config['dock_height']
+    if not isinstance(groups, Mapping) or not groups:
+        raise ValueError('dock height groups must be a nonempty mapping')
+    weights = {}
+    for name, group in groups.items():
+        if not isinstance(group, Mapping) or set(group) != {'range', 'weight'}:
+            raise ValueError('dock height groups require range and weight')
+        bounds = group['range']
+        if (not isinstance(bounds, (tuple, list)) or len(bounds) != 2
+                or any(type(v) is not int for v in bounds)
+                or not 32 <= bounds[0] <= bounds[1] <= 120):
+            raise ValueError('dock height ranges must be integers within 32..120')
+        weights[name] = group['weight']
+    _weights(weights, set(groups), 'dock height')
 
 
 def scale_choices(weights):
@@ -59,13 +132,15 @@ class GenerationConfig:
     desktop_fraction: float = .8
     max_attempts: int = 30
     progress: bool = True
-    game_zoom: dict = field(default_factory=lambda: dict(NEUTRAL_SCALE))
-    display_scale: dict = field(default_factory=lambda: dict(NEUTRAL_SCALE))
-    standalone_source_budget: dict | None = None
+    game_zoom: dict = field(default_factory=lambda: dict(GAME_ZOOM))
+    display_scale: dict = field(default_factory=lambda: dict(DISPLAY_SCALE))
+    desktop_appearance: dict = field(default_factory=lambda: deepcopy(DESKTOP_APPEARANCE))
+    standalone_source_budget: dict | None = field(default_factory=lambda: {'max_dimension': 4096, 'max_pixels': 12_000_000})
 
     def __post_init__(self):
         scale_choices(self.game_zoom)
         scale_choices(self.display_scale)
+        validate_desktop_appearance(self.desktop_appearance)
         budget = self.standalone_source_budget
         if budget is not None and (
             not isinstance(budget, dict)

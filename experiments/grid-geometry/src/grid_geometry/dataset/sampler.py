@@ -1,7 +1,7 @@
 """Sample scenes and games for the phase dataset."""
 import math
 
-from .sampling_config import NEUTRAL_SCALE, STYLES, THEMES, scale_choices
+from .sampling_config import DESKTOP_APPEARANCE, NEUTRAL_SCALE, SOURCE_CELL_SIZE, STYLES, THEMES, scale_choices
 
 def _choice(rng, weights):
     keys = list(weights)
@@ -46,7 +46,7 @@ def _game(rng, category, pitch, size, *, coverage_exploration_fraction=.12,
             columns = rng.randint(min_cols, min(100, min_cols + rng.randint(4, 35)))
     style = rng.choice(STYLES)
     # Large boards use compact native tiles before scaling to the desired pitch.
-    cell_size = rng.randint(12, 22) if rows * columns > 900 else rng.randint(16, 40)
+    cell_size = rng.randint(*SOURCE_CELL_SIZE['large' if rows * columns > 900 else 'normal'])
     progress_kind = _choice(rng, {'hidden': 20, 'early': 25, 'mid': 30, 'late': 20, 'finished': 5})
     if progress_kind == 'hidden':
         status, progress = 'new', 0.
@@ -69,14 +69,24 @@ def _game(rng, category, pitch, size, *, coverage_exploration_fraction=.12,
             'elapsed_seconds': 0 if status == 'new' else rng.randint(1, 999), 'appearance': appearance}, progress_kind
 
 
-def _desktop(rng):
-    style = _choice(rng, {'modern': 75, 'classic': 25})
-    return {'shell': 'taskbar', 'style': style, 'color_scheme': 'default' if style == 'classic' else rng.choice(('light', 'dark')),
-            'accent_color': None,
-            'clock_time': '10:08', 'clock_date': '2025/06/12'}
+def _desktop(rng, desktop_appearance=None):
+    config = DESKTOP_APPEARANCE if desktop_appearance is None else desktop_appearance
+    shell = _choice(rng, config['shell'])
+    style = _choice(rng, config['shell_styles'][shell])
+    desktop = {'shell': shell, 'style': style, 'color_scheme': _choice(rng, config['color_scheme'][style]),
+               'accent_color': None, 'clock_time': '10:08', 'clock_date': '2025/06/12'}
+    relevant = {'taskbar': ('show_taskbar',), 'dock': ('show_dock', 'show_status_bar'),
+                'top_panel': ('show_top_panel',)}[shell]
+    for name in relevant:
+        desktop[name] = rng.random() < config['visibility'][name]
+    if shell == 'dock' and desktop['show_dock']:
+        groups = config['dock_height']
+        group = _choice(rng, {name: value['weight'] for name, value in groups.items()})
+        desktop['dock_height'] = rng.randint(*groups[group]['range'])
+    return desktop
 
 
-def _scene(rng, game, negative_kind=None, desktop_fraction=.8, *, display_scale=None):
+def _scene(rng, game, negative_kind=None, desktop_fraction=.8, *, display_scale=None, desktop_appearance=None):
     seed = rng.getrandbits(64)
     if game is not None and (game['rows'] * game['columns'] > 700 or rng.random() >= desktop_fraction):
         return {'mode': 'game', 'seed': seed, 'windows': [{'type': 'minesweeper', 'content': game}]}
@@ -90,7 +100,7 @@ def _scene(rng, game, negative_kind=None, desktop_fraction=.8, *, display_scale=
             windows.append({'type': rng.choice(('spreadsheet', 'sudoku', 'browser', 'other_puzzle')), 'seed': rng.getrandbits(64)})
     scale = _sample_scale(rng, NEUTRAL_SCALE if display_scale is None else display_scale)
     return {'mode': 'desktop', 'seed': seed, 'layout_seed': rng.getrandbits(64),
-            'screen': {'width': 1600, 'height': 1000, 'scale': scale}, 'desktop': _desktop(rng),
+            'screen': {'width': 1600, 'height': 1000, 'scale': scale}, 'desktop': _desktop(rng, desktop_appearance),
             'wallpaper': {'category': 'procedural', 'seed': rng.getrandbits(64)}, 'windows': windows}
 
 
