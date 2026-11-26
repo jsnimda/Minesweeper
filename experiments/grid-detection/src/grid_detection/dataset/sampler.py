@@ -73,6 +73,70 @@ def sample_scale(rng: random.Random, weights: Mapping) -> float:
     return choose(rng, choices)
 
 
+def _display_scale_policy() -> Mapping:
+    """Validate a global scale mapping or a complete mapping by resolution group."""
+    policy = SAMPLING_CONFIG["display_scale"]
+    if not isinstance(policy, Mapping) or not policy:
+        raise ValueError("Display scale policy must be a nonempty mapping")
+    if any(isinstance(value, Mapping) for value in policy.values()):
+        if set(policy) != set(SAMPLING_CONFIG["resolution"]):
+            raise ValueError("Display scale groups must match resolution groups")
+        for weights in policy.values():
+            _scale_choices(weights)
+    else:
+        _scale_choices(policy)
+    return policy
+
+
+def _validate_desktop_sampling() -> None:
+    styles = SAMPLING_CONFIG["shell_styles"]
+    shells = {"taskbar", "dock", "top_panel"}
+    if not isinstance(styles, Mapping) or set(styles) != shells:
+        raise ValueError("Shell styles must specify every supported shell")
+    for weights in styles.values():
+        if not isinstance(weights, Mapping) or not weights or not set(weights) <= {"modern", "classic"}:
+            raise ValueError("Shell style distributions contain unsupported styles")
+        _validate_weights(weights, "Shell style")
+    visibility = SAMPLING_CONFIG["component_visibility"]
+    fields = {"show_taskbar", "show_dock", "show_status_bar", "show_top_panel"}
+    if not isinstance(visibility, Mapping) or set(visibility) != fields:
+        raise ValueError("Component visibility must specify every supported component")
+    for probability in visibility.values():
+        try:
+            valid = (type(probability) in (int, float) and math.isfinite(probability)
+                     and 0 <= probability <= 1)
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise ValueError("Visibility probabilities must be finite numbers between 0 and 1")
+    groups = SAMPLING_CONFIG["dock_height"]
+    if not isinstance(groups, Mapping) or not groups:
+        raise ValueError("Dock height groups must be a nonempty mapping")
+    weights = {}
+    for name, group in groups.items():
+        if not isinstance(group, Mapping) or set(group) != {"weight", "range"}:
+            raise ValueError("Dock height groups require weight and range")
+        bounds = group["range"]
+        if (not isinstance(bounds, (tuple, list)) or len(bounds) != 2
+                or any(type(value) is not int for value in bounds)
+                or not 32 <= bounds[0] <= bounds[1] <= 120):
+            raise ValueError("Dock height ranges must be inclusive integers within 32..120")
+        weights[name] = group["weight"]
+    _validate_weights(weights, "Dock height")
+
+
+def _validate_weights(weights: Mapping, label: str) -> None:
+    try:
+        valid = all(type(weight) in (int, float) and math.isfinite(weight) and weight >= 0
+                    for weight in weights.values())
+        total = sum(weights.values()) if valid else 0
+        valid = valid and math.isfinite(total) and total > 0
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise ValueError(f"{label} weights must be finite, nonnegative and have a positive total")
+
+
 def sample_accent_color(rng: random.Random) -> str:
     """Generate a restrained, moderately saturated accent."""
     hue = rng.random()
@@ -86,17 +150,9 @@ def sample_accent_color(rng: random.Random) -> str:
 
 
 def sample_desktop(rng: random.Random) -> dict:
+    _validate_desktop_sampling()
     shell = choose(rng, SAMPLING_CONFIG["shell"])
-
-    allowed = SAMPLING_CONFIG["shell_styles"][shell]
-    style = choose(
-        rng,
-        {
-            name: weight
-            for name, weight in SAMPLING_CONFIG["style"].items()
-            if name in allowed
-        },
-    )
+    style = choose(rng, SAMPLING_CONFIG["shell_styles"][shell])
     color_scheme = choose(
         rng, SAMPLING_CONFIG["color_scheme"][style]
     )
@@ -119,7 +175,7 @@ def sample_desktop(rng: random.Random) -> dict:
     clock_time = f"{clock_hour:02d}:{clock_minute:02d}"
     clock_date = clock_day.strftime("%m/%d/%Y")
 
-    return {
+    desktop = {
         "shell": shell,
         "style": style,
         "color_scheme": color_scheme,
@@ -127,6 +183,16 @@ def sample_desktop(rng: random.Random) -> dict:
         "clock_time": clock_time,
         "clock_date": clock_date,
     }
+    visibility = SAMPLING_CONFIG["component_visibility"]
+    relevant = {"taskbar": ("show_taskbar",), "dock": ("show_dock", "show_status_bar"),
+                "top_panel": ("show_top_panel",)}[shell]
+    for field in relevant:
+        desktop[field] = rng.random() < visibility[field]
+    if shell == "dock" and desktop["show_dock"]:
+        groups = SAMPLING_CONFIG["dock_height"]
+        group = choose(rng, {name: item["weight"] for name, item in groups.items()})
+        desktop["dock_height"] = rng.randint(*groups[group]["range"])
+    return desktop
 
 
 def sample_game(rng: random.Random) -> dict:
@@ -230,12 +296,15 @@ def sample_scene(seed: int | str = 42, *, sampling_metadata: dict | None = None)
     rng = random.Random(seed)
     # Validate both distributions even when a scene does not use one of them.
     _scale_choices(SAMPLING_CONFIG["game_zoom"])
-    _scale_choices(SAMPLING_CONFIG["display_scale"])
+    display_policy = _display_scale_policy()
+    _validate_desktop_sampling()
     mode = choose(rng, SAMPLING_CONFIG["scene_mode"])
     if mode == "desktop":
-        _, (width, height) = choose_group(rng, SAMPLING_CONFIG["resolution"])
+        resolution_group, (width, height) = choose_group(rng, SAMPLING_CONFIG["resolution"])
+        scale_weights = (display_policy[resolution_group]
+                         if resolution_group in display_policy else display_policy)
+        display_scale = sample_scale(rng, scale_weights)
         desktop = sample_desktop(rng)
-        display_scale = sample_scale(rng, SAMPLING_CONFIG["display_scale"])
         game_count = choose(rng, SAMPLING_CONFIG["game_count"])
     else:
         game_count = 1

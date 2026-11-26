@@ -39,9 +39,7 @@ def _generate(monkeypatch, tmp_path, request, sampled_sizes, *, augment=False):
     return generator._generate_one(_task(tmp_path, augment=augment))['record']
 
 
-def test_neutral_defaults_and_singleton_rng():
-    assert sampler.SAMPLING_CONFIG['game_zoom'] == {1.0: 1}
-    assert sampler.SAMPLING_CONFIG['display_scale'] == {1.0: 1}
+def test_singleton_scale_does_not_consume_rng():
     rng = random.Random(5)
     before = rng.getstate()
     assert sampler.sample_scale(rng, {0.75: 0, 1.0: 2}) == 1.0
@@ -68,11 +66,13 @@ def test_unused_scale_configuration_is_still_validated(monkeypatch):
 @pytest.mark.parametrize('mode', ['desktop', 'game', 'grid'])
 def test_neutral_scales_do_not_change_seeded_decisions(monkeypatch, mode):
     monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'scene_mode', {mode: 1})
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'game_zoom', {1.0: 1})
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'display_scale', {1.0: 1})
     if mode == 'desktop':
         monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'game_count', {0: 1})
         monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'wallpaper_type', {'procedural': 1})
     actual = sampler.sample_scene(113)
-    # Simulate the old sampler's lack of scale sampling and remove the new fields.
+    # Bypassing singleton scale draws must leave the other decisions unchanged.
     monkeypatch.setattr(sampler, 'sample_scale', lambda rng, weights: 1.0)
     baseline = sampler.sample_scene(113)
     assert actual == baseline
@@ -105,6 +105,8 @@ def test_scale_fields_by_scene_mode(monkeypatch, mode):
 
 def test_standalone_does_not_sample_display_scale(monkeypatch):
     monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'scene_mode', {'grid': 1})
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'board_size',
+                        {'small': {'weight': 1, 'size': (5, 5), 'mines': 3}})
     calls = []
     original = sampler.sample_scale
 
@@ -235,10 +237,11 @@ def test_desktop_fitting_preserves_scales_and_original_size(monkeypatch, tmp_pat
 
 def test_desktop_style_policy_and_valid_requests():
     config = sampler.SAMPLING_CONFIG
-    assert config['style'] == {'modern': 75, 'classic': 25}
     assert config['shell'] == {'taskbar': 60, 'dock': 25, 'top_panel': 15}
     assert config['shell_styles'] == {
-        'taskbar': ('modern', 'classic'), 'dock': ('modern',), 'top_panel': ('modern',),
+        'taskbar': {'modern': 75, 'classic': 25},
+        'dock': {'modern': 95, 'classic': 5},
+        'top_panel': {'modern': 80, 'classic': 20},
     }
     assert 'taskbar_layout' not in config
     for seed in range(100):
@@ -260,6 +263,7 @@ def test_dock_visibility_precheck_matches_rendered_placement(monkeypatch):
                         {'small': {'weight': 1, 'size': (5, 5), 'mines': 3}})
     monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'cell_size', {'small': {'weight': 1, 'range': (12, 12)}})
     monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'resolution', {'fixed': {'weight': 1, 'options': [(640, 480)]}})
+    monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'display_scale', {1.5: 1})
     monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'cleanliness', {'minimal': 1})
     monkeypatch.setitem(sampler.SAMPLING_CONFIG, 'wallpaper_type', {'procedural': 1})
     monkeypatch.setattr(sampler, 'sample_desktop', lambda rng: {

@@ -13,22 +13,29 @@ SAMPLING_CONFIG = {
         "dock": 25,
         "top_panel": 15,
     },
-    "style": {
-        "modern": 75,
-        "classic": 25,
-    },
     "shell_styles": {
-        "taskbar": ("modern", "classic"),
-        "dock": ("modern",),
-        "top_panel": ("modern",),
+        "taskbar": {"modern": 75, "classic": 25},
+        "dock": {"modern": 95, "classic": 5},
+        "top_panel": {"modern": 80, "classic": 20},
     },
     "color_scheme": {
         "modern": {"light": 55, "dark": 45},
-        "classic": {"default": 100},
+        "classic": {"default": 70, "dark": 30},
     },
     "custom_accent": {
         "modern": {True: 70, False: 30},
         "classic": {True: 10, False: 90},
+    },
+    "component_visibility": {
+        "show_taskbar": 0.90, "show_dock": 0.85,
+        "show_status_bar": 0.95, "show_top_panel": 0.95,
+    },
+    "dock_height": {
+        "small": {"weight": 10, "range": (32, 47)},
+        "medium": {"weight": 25, "range": (48, 63)},
+        "normal": {"weight": 45, "range": (64, 80)},
+        "large": {"weight": 15, "range": (81, 96)},
+        "extra_large": {"weight": 5, "range": (97, 120)},
     },
 
     # Wallpaper categories
@@ -111,8 +118,16 @@ SAMPLING_CONFIG = {
         4: 1.5,
     },
     "game_renderer": {"classic": 25, "windows7": 25, "microsoft": 25, "google": 25},
-    "game_zoom": {1.0: 1},
-    "display_scale": {1.0: 1},
+    "game_zoom": {0.5: 5, 0.75: 10, 1.0: 55, 1.25: 15, 1.5: 10, 2.0: 5},
+    # Either a mapping for every resolution group, or one flat global scale mapping.
+    "display_scale": {
+        "retro": {0.75: 15, 1.0: 75, 1.25: 8, 1.5: 2, 1.75: 0, 2.0: 0},
+        "laptop": {0.75: 5, 1.0: 50, 1.25: 25, 1.5: 15, 1.75: 3, 2.0: 2},
+        "widescreen": {0.75: 5, 1.0: 60, 1.25: 20, 1.5: 10, 1.75: 3, 2.0: 2},
+        "high_res": {0.75: 2, 1.0: 18, 1.25: 20, 1.5: 25, 1.75: 15, 2.0: 20},
+        "ultrawide": {0.75: 5, 1.0: 40, 1.25: 25, 1.5: 20, 1.75: 5, 2.0: 5},
+        "portrait": {0.75: 5, 1.0: 50, 1.25: 25, 1.5: 15, 1.75: 3, 2.0: 2},
+    },
     "board_size": {
         "beginner": {"weight": 25, "size": (9, 9), "mines": 10},
         "intermediate": {"weight": 25, "size": (16, 16), "mines": 40},
@@ -125,9 +140,9 @@ SAMPLING_CONFIG = {
     "custom_mine_density": (0.12, 0.20),
     "cell_size": {
         "small": {"weight": 20, "range": (12, 19)},
-        "normal": {"weight": 50, "range": (20, 32)},
-        "large": {"weight": 25, "range": (33, 48)},
-        "extra_large": {"weight": 5, "range": (49, 64)},
+        "normal": {"weight": 65, "range": (20, 32)},
+        "large": {"weight": 13, "range": (33, 48)},
+        "extra_large": {"weight": 2, "range": (49, 64)},
     },
     # Limits apply to the rendered game/grid before capture augmentation.
     "standalone_image_budget": {"max_dimension": 4096, "max_pixels": 12_000_000},
