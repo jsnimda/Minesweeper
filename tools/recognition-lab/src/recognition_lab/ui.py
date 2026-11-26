@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer, Slot
 from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QSplitter, QPushButton, QFileDialog, QComboBox, QLabel, QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QTextEdit, QListWidget, QMessageBox, QInputDialog, QScrollArea, QToolBar)
 from .capture import Frame, capture_frame, monitors
-from .pipeline import Pipeline, Settings, ROOT
+from .pipeline import Pipeline, Settings, ROOT, GEOMETRY_ROOT
 from .rendering import draw
 from .results import RecognitionResult
 
@@ -53,12 +53,9 @@ class Canvas(QWidget):
             canvas.scale(self.scale, self.scale)
             canvas.drawImage(self.main.image_skia, 0, 0)
             grid = self.main.selected_grid()
-            channel = self.main.heatmap.currentIndex()-1
             heat = None
             tile_offset = (0, 0)
-            if grid is not None and 0 <= channel < 3 and not grid.phase_data:
-                heat = grid.heatmaps[channel]
-            elif grid is not None and grid.phase_data:
+            if grid is not None and grid.phase_data:
                 mode = self.main.heatmap.currentText()
                 phase = grid.phase_data
                 if mode == 'Phase occupancy': heat = phase['global'].occupancy
@@ -173,10 +170,9 @@ class MainWindow(QMainWindow):
         splitter.addWidget(left)
         self.canvas = Canvas(self); splitter.addWidget(self.canvas)
         panel = QWidget(); form = QFormLayout(panel)
-        self.yolo_path = QLineEdit(str(ROOT/'models/yolo.pt')); self.unet_path = QLineEdit(str(ROOT/'models/grid_unet.pt'))
-        self.phase_path = QLineEdit(str(Settings().config.parents[1] / 'runs/phase-baseline-v1/best.pt'))
-        self.config = QLineEdit(str(Settings().config)); self.validation = QLineEdit(str(Settings().validation))
-        for name, field, key in [('YOLO model', self.yolo_path, 'yolo'), ('GridUNet model', self.unet_path, 'unet'), ('PhaseGridUNet model', self.phase_path, 'phase')]:
+        self.yolo_path = QLineEdit(str(ROOT/'models/yolo.pt'))
+        self.phase_path = QLineEdit(str(GEOMETRY_ROOT / 'runs/phase-baseline-v1/best.pt'))
+        for name, field, key in [('YOLO model', self.yolo_path, 'yolo'), ('PhaseGridUNet model', self.phase_path, 'phase')]:
             row = QWidget(); layout = QHBoxLayout(row); layout.setContentsMargins(0,0,0,0); layout.addWidget(field)
             browse = QPushButton('…'); browse.clicked.connect(lambda checked=False, f=field: self.choose_path(f)); layout.addWidget(browse)
             load = QPushButton('Load'); load.clicked.connect(lambda checked=False, k=key: self.model_action(k, True)); layout.addWidget(load)
@@ -184,20 +180,16 @@ class MainWindow(QMainWindow):
             self.conflicting_controls.extend([load, unload])
             form.addRow(name, row)
         self.loaded = QLabel('No models loaded'); self.loaded.setWordWrap(True); form.addRow('Loaded', self.loaded)
-        for title, field in [('Training TOML', self.config), ('Validation TOML', self.validation)]:
-            row = QWidget(); layout = QHBoxLayout(row); layout.setContentsMargins(0,0,0,0); layout.addWidget(field); b = QPushButton('…'); b.clicked.connect(lambda checked=False, f=field: self.choose_path(f)); layout.addWidget(b); form.addRow(title,row)
         self.device = QComboBox(); self.device.addItems(['auto','cpu','mps','cuda']); form.addRow('Device', self.device)
-        self.geometry_backend = QComboBox(); self.geometry_backend.addItems(['gaussian', 'phase']); form.addRow('Geometry backend', self.geometry_backend)
         self.imgsz = self.spin(1280, 32, 8192); form.addRow('YOLO image size', self.imgsz)
         self.conf = QDoubleSpinBox(); self.conf.setRange(0,1); self.conf.setSingleStep(.05); self.conf.setValue(.25); form.addRow('Confidence', self.conf)
         self.padding = self.spin(20,0,2000); form.addRow('Crop padding (px)', self.padding)
-        self.mode = QComboBox(); self.mode.addItems(['whole','tiled','native']); form.addRow('U-Net mode', self.mode)
-        self.tile = self.spin(384,8,4096); self.overlap = self.spin(96,0,4095); self.batch = self.spin(4,1,128)
-        form.addRow('Tile size', self.tile); form.addRow('Tile overlap', self.overlap); form.addRow('Tile batch', self.batch)
+        self.mode = QComboBox(); self.mode.addItems(['whole','tiled']); form.addRow('Geometry mode', self.mode)
+        self.tile = self.spin(384,8,4096); self.overlap = self.spin(96,0,4095)
+        form.addRow('Tile size', self.tile); form.addRow('Tile overlap', self.overlap)
         self.mode.currentTextChanged.connect(self.update_tile_controls)
         self.update_tile_controls(self.mode.currentText())
-        self.decoder = QComboBox(); self.decoder.addItems(['joint','independent']); form.addRow('Decoder', self.decoder)
-        self.heatmap = QComboBox(); self.heatmap.addItems(['None','Centers','Vertical boundaries','Horizontal boundaries', 'Phase occupancy', 'Phase coverage', 'Tile horizontal phase', 'Tile vertical phase']); self.heatmap.currentIndexChanged.connect(self.redraw); form.addRow('Heatmap', self.heatmap)
+        self.heatmap = QComboBox(); self.heatmap.addItems(['None', 'Phase occupancy', 'Phase coverage', 'Tile horizontal phase', 'Tile vertical phase']); self.heatmap.currentIndexChanged.connect(self.redraw); form.addRow('Heatmap', self.heatmap)
         self.tile_inspect = self.spin(0, 0, 99999); self.tile_inspect.valueChanged.connect(self.redraw); form.addRow('Phase tile index (zero-based)', self.tile_inspect)
         self.layer_widgets = {}
         for key, label in [('detections','Detections'),('crops','Crop boundaries'),('boundaries','Grid boundaries'),('centers','Cell centers'), ('tiles','Phase tile layout'), ('terminations','Phase observed terminations'), ('cell_support','Phase cell support')]:
@@ -212,7 +204,7 @@ class MainWindow(QMainWindow):
         self.refresh_monitors()
 
     def update_tile_controls(self, mode):
-        for widget in (self.tile, self.overlap, self.batch): widget.setEnabled(mode == 'tiled')
+        for widget in (self.tile, self.overlap): widget.setEnabled(mode == 'tiled')
 
     def spin(self, value, low, high):
         widget = QSpinBox(); widget.setRange(low,high); widget.setValue(value); return widget
@@ -286,7 +278,7 @@ class MainWindow(QMainWindow):
                 if panel_visible: self.show()
         QTimer.singleShot(250, finish)
     def settings(self):
-        return Settings(self.device.currentText(), self.imgsz.value(), self.conf.value(), self.padding.value(), self.mode.currentText(), self.tile.value(), self.overlap.value(), self.batch.value(), self.decoder.currentText(), Path(self.config.text()), Path(self.validation.text()), self.geometry_backend.currentText())
+        return Settings(self.device.currentText(), self.imgsz.value(), self.conf.value(), self.padding.value(), self.mode.currentText(), self.tile.value(), self.overlap.value())
     def start_worker(self, fn, done, guard_generation=True):
         if self.worker is not None: return
         self.statusBar().showMessage('Processing…'); self.worker = Worker(fn, self.generation)
@@ -310,13 +302,12 @@ class MainWindow(QMainWindow):
         if self.worker is not None: return
         if not load:
             getattr(self.pipeline, 'unload_'+key)(); self.update_loaded(); return
-        path = {'yolo': self.yolo_path, 'unet': self.unet_path, 'phase': self.phase_path}[key].text(); config = self.config.text()
+        path = {'yolo': self.yolo_path, 'phase': self.phase_path}[key].text()
         def action():
             if key == 'yolo': self.pipeline.load_yolo(path)
-            elif key == 'phase': self.pipeline.load_phase(path)
-            else: self.pipeline.load_unet(path, config)
+            else: self.pipeline.load_phase(path)
         self.start_worker(action, lambda _: self.update_loaded(), guard_generation=False)
-    def update_loaded(self): self.loaded.setText(f'YOLO: {self.pipeline.yolo_path or "unloaded"}\nGridUNet: {self.pipeline.unet_path or "unloaded"}\nPhaseGridUNet: {self.pipeline.phase_path or "unloaded"}')
+    def update_loaded(self): self.loaded.setText(f'YOLO: {self.pipeline.yolo_path or "unloaded"}\nPhaseGridUNet: {self.pipeline.phase_path or "unloaded"}')
     def run(self, mode):
         if self.worker is not None: return
         if self.frame is None: QMessageBox.warning(self,'Recognition','Open or capture an image first'); return

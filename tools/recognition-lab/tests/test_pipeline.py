@@ -7,14 +7,13 @@ from recognition_lab.results import RecognitionResult, GeometryResult, Crop
 def test_missing_models():
     pipeline = Pipeline()
     with pytest.raises(FileNotFoundError): pipeline.load_yolo(Path('/missing/yolo.pt'))
-    with pytest.raises(FileNotFoundError): pipeline.load_unet(Path('/missing/unet.pt'), Path('/missing/config.toml'))
     with pytest.raises(FileNotFoundError): pipeline.load_phase(Path('/missing/phase.pt'))
 
 
-def test_phase_backend_requires_phase_checkpoint():
+def test_geometry_requires_phase_checkpoint():
     pipeline = Pipeline()
     with pytest.raises(RuntimeError, match='PhaseGridUNet'):
-        pipeline.geometry(None, RecognitionResult(), Settings(geometry_backend='phase'))
+        pipeline.geometry(None, RecognitionResult(), Settings())
 
 
 def test_empty_detection_result():

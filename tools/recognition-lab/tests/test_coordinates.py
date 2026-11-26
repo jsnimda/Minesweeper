@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 from recognition_lab.results import Crop, DesktopMapping, crop_box
-from recognition_lab.tiles import stitch_tiles, tile_starts
 
 
 def test_outward_rounding_and_clip():
@@ -18,27 +17,6 @@ def test_crop_and_retina_coordinates():
     assert mapping.to_desktop(1200, 800) == (-600, 500)
     mapping = DesktopMapping(100, -800, 900, 600, 1350, 1200)
     assert mapping.to_desktop(675, 600) == (550, -500)
-
-
-def test_tile_coverage_and_stitching():
-    assert tile_starts(1000, 384, 96)[-1] == 616
-    image = np.zeros((101, 500, 3), np.uint8)
-    def predict(batch):
-        return np.broadcast_to(np.array([.1, .5, .9], np.float32)[None, :, None, None], (len(batch), 3, 384, 384)).copy()
-    result = stitch_tiles(image, 384, 96, 2, predict)
-    assert result.shape == (3, 101, 500)
-    assert np.allclose(result[:, 50, 300], [.1, .5, .9])
-    assert np.allclose(result[:, 0, 0], [.1, .5, .9])
-
-
-def test_spatially_varying_tiles_and_small_padding():
-    for height, width in [(29, 77), (9, 13)]:
-        yy, xx = np.indices((height, width))
-        image = np.stack((xx, yy, (xx + yy) % 251), axis=-1).astype(np.uint8)
-        def predict(batch):
-            return batch.transpose(0, 3, 1, 2).astype(np.float32) / 255
-        maps = stitch_tiles(image, 32, 8, 3, predict)
-        assert np.allclose(maps, image.transpose(2, 0, 1) / 255, atol=1e-6)
 
 
 def test_geometry_inverse_transforms():

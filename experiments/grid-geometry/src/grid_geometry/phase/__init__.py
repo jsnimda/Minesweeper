@@ -1,4 +1,4 @@
-"""Phase-field research implementation, independent of the Gaussian baseline."""
+"""Phase-field grid geometry recognition."""
 
 from .model import PhaseGridUNet, phase_predictions
 from .targets import PhaseGeometry, phase_targets

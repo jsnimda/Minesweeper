@@ -2,7 +2,9 @@
 
 import numpy as np
 
-from .signals import FloatArray
+from numpy.typing import NDArray
+
+FloatArray = NDArray[np.float64]
 
 
 def sample_bilinear(field: FloatArray, x: FloatArray, y: FloatArray) -> FloatArray:

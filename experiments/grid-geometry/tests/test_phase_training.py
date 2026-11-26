@@ -54,11 +54,6 @@ def test_positive_without_phase_supervision():
     assert result['positive']['occupancy_loss'] is not None
 
 
-def test_gaussian_model_remains_three_channel():
-    from grid_geometry.model import GridUNet
-    assert GridUNet().segmentation_head.out_channels == 3
-
-
 def test_geometry_categorization():
     result = SimpleNamespace(status='insufficient_evidence', hypotheses=(), reasons=('no support',))
     records = [geometry_record({'sample_id':'a','geometry':{},'complete':False},result,None), geometry_record({'sample_id':'b','geometry':None},result,None)]
