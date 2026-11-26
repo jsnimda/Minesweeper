@@ -150,16 +150,6 @@ def test_very_small_zoom_retains_drawable_layout(style):
         assert 0 <= y < bottom <= image.height
 
 
-def test_legacy_scene_uses_shared_zoom_measurements():
-    from synthetic_scenes.scene import GameSpec, render_scene as legacy_render
-
-    spec = GameSpec(rows=2, columns=3, mine_count=0, status='new', progress=0.,
-                    appearance={'style': 'microsoft', 'cell_size': 20, 'zoom': 1.5})
-    image, metadata = legacy_render([spec], mode='game')
-    assert image.size == measure_game_region(2, 3, 'microsoft', 20, 1.5)
-    assert metadata['boards'][0]['style_parameters']['pitch'] == 33
-
-
 def test_zoom_does_not_scale_external_frame_or_desktop():
     chrome = []
     for zoom in (1.0, 2.0):

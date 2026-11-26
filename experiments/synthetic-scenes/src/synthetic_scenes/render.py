@@ -1,6 +1,5 @@
 """Render descriptive scene dictionaries without applying dataset sampling policy.
 
-The old :mod:`synthetic_scenes.scene` API remains available for existing users.
 Coordinates in returned annotations are half-open image-space xyxy boxes.
 """
 from collections.abc import Collection
