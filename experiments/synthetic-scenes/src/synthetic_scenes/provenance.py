@@ -2,6 +2,7 @@
 from hashlib import sha256
 from importlib import metadata
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -47,7 +48,9 @@ def environment_state(experiment=None):
         except (metadata.PackageNotFoundError, OSError, ValueError, TypeError):
             versions[name] = None
     return {'python': platform.python_version(), 'implementation': platform.python_implementation(),
-            'os': platform.system(), 'machine': platform.machine(), 'dependencies': versions}
+            'os': platform.system(), 'machine': platform.machine(), 'dependencies': versions,
+            'logical_cpu_count': os.cpu_count(),
+            'available_cpu_count': getattr(os, 'process_cpu_count', lambda: None)()}
 
 
 def asset_inventory(assets):

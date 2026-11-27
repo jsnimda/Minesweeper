@@ -13,7 +13,7 @@ def test_configuration_snapshot_and_overrides(monkeypatch, tmp_path):
     import synthetic_scenes.provenance as provenance
     calls = []
     monkeypatch.setattr(provenance, 'run_provenance', lambda *args: calls.append(args) or {'source': {'commit': 'test'}})
-    config = GenerationConfig(train=0, val=0, test=0, progress=False, game_zoom={1.: 1},
+    config = GenerationConfig(train=0, val=0, test=0, workers=3, progress=False, game_zoom={1.: 1},
                               standalone_source_budget=None)
     original = deepcopy(asdict(config)); state = random.getstate()
     generator.generate_dataset(tmp_path / 'geometry', config)
@@ -27,6 +27,12 @@ def test_configuration_snapshot_and_overrides(monkeypatch, tmp_path):
     assert result['source_policy']['augmentation']['blur_choices'] == list(generator.BLUR_CHOICES)
     assert result['provenance']['wallpaper_assets']['status'] == 'not_applicable'
     assert result['status'] == 'complete' and len(calls) == 1
+    assert result['workers'] == config.workers == 3
+    performance = json.loads((tmp_path / 'geometry' / 'statistics.json').read_text())['performance']
+    assert performance['accepted_image_count'] == 0
+    assert performance['asset_preparation_seconds'] is None
+    assert performance['overall_generation_seconds'] >= performance['sample_generation_export_seconds']
+    assert performance['sample_generation_images_per_second'] == 0
     assert asdict(config) == original and random.getstate() == state
 
 
@@ -45,6 +51,7 @@ def test_failure_retains_incomplete_snapshot(monkeypatch, tmp_path):
         generator.generate_dataset(tmp_path / 'failed', config)
     result = json.loads((tmp_path / 'failed' / 'config.json').read_text())
     assert result['status'] == 'incomplete' and result['provenance']['source']['commit'] == 'test'
+    assert not (tmp_path / 'failed' / 'statistics.json').exists()
     assert result['standalone_source_budget'] == {'max_dimension': 4096, 'max_pixels': 12_000_000}
     assert len(calls) == 1
 

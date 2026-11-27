@@ -524,15 +524,22 @@ def generate_dataset(destination, config=GenerationConfig()):
 
     The destination must be empty. A failed run keeps an incomplete marker and
     cannot be silently overwritten. Procedural wallpapers need no asset download.
+    Performance phases cover provenance, sample export and split summaries, and
+    final statistics preparation. Overall time starts at entry and ends before
+    assembling performance and writing statistics; it includes setup between
+    phases. Neither statistics nor the completed configuration write is timed.
     """
+    overall_started = perf_counter()
     root = Path(destination)
     if root.exists() and (not root.is_dir() or any(root.iterdir())):
         raise FileExistsError(f'destination is not empty: {root}')
     root.mkdir(parents=True, exist_ok=True)
     settings = asdict(config)
     from synthetic_scenes.provenance import run_provenance
+    provenance_started = perf_counter()
     provenance = run_provenance(Path(__file__).resolve().parent, 'grid-geometry')
     provenance['wallpaper_assets'] = {'status': 'not_applicable', 'reason': 'procedural wallpaper only'}
+    provenance_seconds = perf_counter() - provenance_started
     metadata = {'generator': 'phase-grid-v1', 'generator_revision': GENERATOR_REVISION,
                 'experiment': 'grid-geometry', 'dataset_name': root.name,
                 **settings, 'source_policy': deepcopy(_source_policy(config)), 'provenance': provenance,
@@ -607,11 +614,26 @@ def generate_dataset(destination, config=GenerationConfig()):
                         'negative_rate': padding_counts['negative_padded'] / padding_counts['negative_samples'] if padding_counts['negative_samples'] else None,
                         'accidental_samples': 0},
                     'retries': dict(retries), 'sampling_fractions': summarize_fractions(fraction_records), 'duration_seconds': elapsed, 'samples_per_second': samples / elapsed if elapsed else 0.}
+    sample_seconds = perf_counter() - started
+    final_started = perf_counter()
     overlap = {f'{a}:{b}': len(ids_by_split[a] & ids_by_split[b]) for a, b in (('train', 'val'), ('train', 'test'), ('val', 'test'))}
     result = {'splits': statistics, 'board_identity_overlap': overlap, 'duration_seconds': perf_counter() - started,
               'accepted': accepted.result({'train': config.train, 'val': config.val, 'test': config.test}),
               'attempts': summaries(attempt_overall, attempt_splits, ('train', 'val', 'test'),
                                     unit='one geometry source attempt for a fixed objective')}
+    image_count = sum(split['samples'] for split in statistics.values())
+    final_seconds = perf_counter() - final_started
+    overall_seconds = perf_counter() - overall_started
+    result['performance'] = {
+        'asset_preparation_seconds': None,
+        'provenance_collection_seconds': provenance_seconds,
+        'sample_generation_export_seconds': sample_seconds,
+        'final_statistics_metadata_preparation_seconds': final_seconds,
+        'overall_generation_seconds': overall_seconds,
+        'accepted_image_count': image_count,
+        'overall_images_per_second': image_count / overall_seconds if overall_seconds else None,
+        'sample_generation_images_per_second': image_count / sample_seconds if sample_seconds else None,
+    }
     _write_json(root / 'statistics.json', result)
     metadata['status'] = 'complete'
     _write_json(root / 'config.json', metadata)

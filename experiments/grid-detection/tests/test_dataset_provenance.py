@@ -16,13 +16,20 @@ def test_snapshot_and_completion(monkeypatch, tmp_path):
     def splits(*args, **kwargs):
         config = json.loads((tmp_path / 'dataset' / 'config.json').read_text())
         assert config['status'] == 'incomplete'
+        assert kwargs['workers'] == config['workers']
         assert config['provenance']['source']['commit'] == 'test'
         return {}
     monkeypatch.setattr(generator, 'run_splits', splits)
-    generator.generate_dataset(tmp_path / 'dataset', train=0, val=0, progress=False)
+    generator.generate_dataset(tmp_path / 'dataset', train=0, val=0, workers=3, progress=False)
     result = json.loads((tmp_path / 'dataset' / 'config.json').read_text())
     assert result['experiment'] == 'grid-detection' and result['dataset_name'] == 'dataset'
     assert result['generator_revision'] == 7 and result['status'] == 'complete'
+    assert result['workers'] == 3
+    performance = json.loads((tmp_path / 'dataset' / 'statistics.json').read_text())['performance']
+    assert performance['accepted_image_count'] == 0
+    assert performance['asset_preparation_seconds'] >= 0
+    assert performance['overall_generation_seconds'] >= performance['sample_generation_export_seconds']
+    assert performance['sample_generation_images_per_second'] == 0
     assert result['sampling_scope']['display_scale'] == {'1.0': 1}
     assert result['source_policy']['display_scale_policy'] == 'global'
     assert result['source_policy']['capture_augmentation']['resize_range'] == [.65, 1.25]
@@ -47,6 +54,7 @@ def test_failure_leaves_incomplete_config(monkeypatch, tmp_path):
         generator.generate_dataset(tmp_path / 'failed', train=0, val=0, progress=False)
     saved = json.loads((tmp_path / 'failed' / 'config.json').read_text())
     assert saved['status'] == 'incomplete' and saved['provenance']['source']['commit'] == 'test'
+    assert not (tmp_path / 'failed' / 'statistics.json').exists()
 
 
 def test_asset_inventory_reuses_actual_prepared_paths(monkeypatch, tmp_path):

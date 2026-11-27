@@ -91,3 +91,16 @@ def test_asset_fingerprint_tracks_bytes_names_and_order(tmp_path):
     assert provenance.asset_inventory(inventory)['fingerprint'] != first['fingerprint']
     b.unlink()
     assert provenance.asset_inventory(inventory)['status'] == 'unavailable'
+
+
+def test_cpu_counts_and_missing_process_cpu_count(monkeypatch):
+    monkeypatch.setattr(provenance.os, 'cpu_count', lambda: 12)
+    monkeypatch.setattr(provenance.os, 'process_cpu_count', lambda: 4, raising=False)
+    snapshot = provenance.environment_state()
+    assert snapshot['logical_cpu_count'] == 12
+    assert snapshot['available_cpu_count'] == 4
+    monkeypatch.setattr(provenance.os, 'cpu_count', lambda: None)
+    monkeypatch.delattr(provenance.os, 'process_cpu_count')
+    snapshot = provenance.environment_state()
+    assert snapshot['logical_cpu_count'] is None
+    assert snapshot['available_cpu_count'] is None

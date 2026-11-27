@@ -10,6 +10,7 @@ import multiprocessing
 from pathlib import Path
 import random
 import tempfile
+from time import perf_counter
 
 from tqdm import tqdm
 
@@ -335,7 +336,15 @@ def _validate_parameters(train, val, test, seed, workers, png_compression, max_a
 def generate_dataset(destination, train=100, val=20, test=0, seed=42, workers=1,
                      png_compression=1, *, augment=True, max_attempts=20,
                      scene_details=False, progress=True):
-    """Generate accepted scenes into an empty destination, with disjoint splits."""
+    """Generate accepted scenes into an empty destination, with disjoint splits.
+
+    Performance phases cover asset resolution, provenance (including hashes),
+    the export loop (including its summaries), and final count preparation.
+    Overall time starts at entry and ends before assembling performance and
+    writing statistics; it also includes setup between phases. Neither final
+    statistics nor the completed configuration write is timed.
+    """
+    overall_started = perf_counter()
     _validate_parameters(train, val, test, seed, workers, png_compression, max_attempts)
     root = Path(destination)
     if root.exists() and (not root.is_dir() or any(root.iterdir())):
@@ -349,6 +358,9 @@ def generate_dataset(destination, train=100, val=20, test=0, seed=42, workers=1,
                       'resampling': augmentation_defaults['resampling'].default.name,
                       'brightness': augmentation_defaults['brightness'].default,
                       'contrast': augmentation_defaults['contrast'].default}
+    provenance_started = perf_counter()
+    provenance = run_provenance(Path(__file__).resolve().parent, 'grid-detection')
+    provenance_seconds = perf_counter() - provenance_started
     config = {'experiment': 'grid-detection', 'dataset_name': root.name,
               'generator_revision': GENERATOR_REVISION, 'train': train, 'val': val, 'test': test,
               'seed': seed, 'workers': workers, 'png_compression': png_compression,
@@ -359,7 +371,7 @@ def generate_dataset(destination, train=100, val=20, test=0, seed=42, workers=1,
                   'capture_augmentation': capture_policy,
                   'standalone_minimum_cell_size': SAMPLING_CONFIG['cell_size']['small']['range'][0],
                   'negative_scene_policy': 'desktop game_count zero'},
-              'provenance': run_provenance(Path(__file__).resolve().parent, 'grid-detection'),
+              'provenance': provenance,
               'status': 'incomplete'}
     config['provenance']['wallpaper_assets'] = {'status': 'not_collected'}
     _write_json(root / 'config.json', config)
@@ -367,17 +379,37 @@ def generate_dataset(destination, train=100, val=20, test=0, seed=42, workers=1,
         for directory in ('images', 'labels'):
             (root / directory / split).mkdir(parents=True, exist_ok=True)
     write_yolo_config(root, test=bool(test))
+    asset_started = perf_counter()
     assets = prepare_assets() if any(count for _, count in counts) else {}
+    asset_seconds = perf_counter() - asset_started
+    provenance_started = perf_counter()
     if assets:
         config['provenance']['wallpaper_assets'] = asset_inventory(assets)
     else:
         active = SAMPLING_CONFIG['scene_mode'].get('desktop', 0) > 0 and any(
             SAMPLING_CONFIG['wallpaper_type'].get(category, 0) > 0 for category in ('artwork', 'photographs'))
         config['provenance']['wallpaper_assets'] = {'status': 'not_collected_no_samples' if active else 'not_applicable'}
+    provenance_seconds += perf_counter() - provenance_started
     _write_json(root / 'config.json', config)
+    sample_started = perf_counter()
     stats = run_splits(counts, seed=seed, workers=workers, png_compression=png_compression,
         augment=augment, max_attempts=max_attempts, scene_details=scene_details,
         progress=progress, mode='export', root=root, assets=assets)
+    sample_seconds = perf_counter() - sample_started
+    final_started = perf_counter()
+    image_count = sum(stats.get(split, {}).get('counts', {}).get('scenes', 0) for split, _ in counts)
+    final_seconds = perf_counter() - final_started
+    overall_seconds = perf_counter() - overall_started
+    stats['performance'] = {
+        'asset_preparation_seconds': asset_seconds,
+        'provenance_collection_seconds': provenance_seconds,
+        'sample_generation_export_seconds': sample_seconds,
+        'final_statistics_metadata_preparation_seconds': final_seconds,
+        'overall_generation_seconds': overall_seconds,
+        'accepted_image_count': image_count,
+        'overall_images_per_second': image_count / overall_seconds if overall_seconds else None,
+        'sample_generation_images_per_second': image_count / sample_seconds if sample_seconds else None,
+    }
     _write_json(root / 'statistics.json', stats)
     config['status'] = 'complete'
     _write_json(root / 'config.json', config)
