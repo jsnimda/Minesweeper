@@ -5,8 +5,17 @@ description = "Desktop application for inspecting Minesweeper recognition"
 readme = "README.md"
 requires-python = "==3.13.18"
 dependencies = [
-  "grid-geometry", "numpy>=2.5.5", "pillow>=13.0.0", "torch==2.15.0",
-  "ultralytics==8.4.216", "pyyaml>=6.0.4", "PySide6", "skia-python>=144.1", "mss==10.2.0", "PyAutoGUI>=0.9.54",
+  "grid-geometry",
+  "numpy>=2.5.5",
+  "pillow>=13.0.0",
+  "torch==2.15.0",
+  "ultralytics>=8.4.220",
+  "pyyaml>=6.0.4",
+  "PySide6",
+  "skia-python>=144.1",
+  "mss==10.2.0",
+  "PyAutoGUI>=0.9.54",
+  "torchvision",
 ]
 
 [build-system]

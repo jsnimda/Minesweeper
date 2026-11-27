@@ -17,7 +17,7 @@ dependencies = [
     "torch==2.15.0; sys_platform == 'darwin'",
     "torch==2.15.0+cu134; sys_platform == 'linux'",
     "torchvision",
-    "ultralytics==8.4.216",
+    "ultralytics>=8.4.220",
     "pyyaml>=6.0.4",
 ]
 

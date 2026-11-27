@@ -1195,6 +1195,8 @@ dependencies = [
     { name = "skia-python" },
     { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
     { name = "torch", version = "2.15.0+cu134", source = { registry = "https://download.pytorch.org/whl/cu134" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchvision", version = "0.29.2", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
+    { name = "torchvision", version = "0.29.2+cu134", source = { registry = "https://download.pytorch.org/whl/cu134" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "ultralytics" },
 ]
 
@@ -1215,7 +1217,9 @@ requires-dist = [
     { name = "skia-python", specifier = ">=144.1" },
     { name = "torch", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'", specifier = "==2.15.0" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==2.15.0", index = "https://download.pytorch.org/whl/cu134" },
-    { name = "ultralytics", specifier = "==8.4.216" },
+    { name = "torchvision", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
+    { name = "torchvision", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", index = "https://download.pytorch.org/whl/cu134" },
+    { name = "ultralytics", specifier = ">=8.4.220" },
 ]
 
 [package.metadata.requires-dev]
@@ -1361,17 +1365,37 @@ wheels = [
 name = "torchvision"
 version = "0.29.2"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+    "(platform_machine != 'x86_64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "sys_platform == 'darwin'",
+]
 dependencies = [
     { name = "numpy" },
     { name = "pillow" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
-    { name = "torch", version = "2.15.0+cu134", source = { registry = "https://download.pytorch.org/whl/cu134" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" } },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/ec/ce97c46e5322b588b95be388f2c21878d014ca20838478e7aab59edd128a/torchvision-0.29.2-py3-none-macosx_14_0_arm64.whl", hash = "sha256:d412494ff011f24c884a3cffd33eba1cb45a0299d4e26c1e175113f9d3b3ebc7", size = 1823414, upload-time = "2026-10-28T15:21:31.892Z" },
     { url = "https://files.pythonhosted.org/packages/30/7a/414f8188d01925491f74d8d125fe00e9c2354b6f0ede21c07737c2619ea4/torchvision-0.29.2-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:a47f8f586df22d9e8e436854f9f613448e36788af8fb2e0eba91516034df2189", size = 7739265, upload-time = "2026-10-28T15:21:33.018Z" },
     { url = "https://files.pythonhosted.org/packages/92/74/699d28bed7453dbe40b09d37aab8f6cd75f19a77a77d5ab4588a4f3239e7/torchvision-0.29.2-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:0875f7a23bd298813240f716c56df44ce72ddb45146589442a38edd0e1f59637", size = 7585493, upload-time = "2026-10-28T15:21:34.372Z" },
     { url = "https://files.pythonhosted.org/packages/cf/9a/a728c3af061bff5e0c8a8389b6dfe99646f8290a2f6a5f8fb624a0c15b92/torchvision-0.29.2-py3-none-win_amd64.whl", hash = "sha256:5812c312d4401c3587a045fa4c6228d982ebc4faa9b472275d11afe5852e24f9", size = 1379121, upload-time = "2026-10-28T15:21:30.558Z" },
+]
+
+[[package]]
+name = "torchvision"
+version = "0.29.2+cu134"
+source = { registry = "https://download.pytorch.org/whl/cu134" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "torch", version = "2.15.0+cu134", source = { registry = "https://download.pytorch.org/whl/cu134" } },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/cu134/torchvision-0.29.2%2Bcu134-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:dcb34b1e60629f0d99a9f1cbce3abd61c519a52aad0483d6dfc16c0f551cf1e3", upload-time = "2026-10-28T14:19:02Z" },
 ]
 
 [[package]]
@@ -1415,7 +1439,7 @@ wheels = [
 
 [[package]]
 name = "ultralytics"
-version = "8.4.216"
+version = "8.4.220"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "matplotlib" },
@@ -1428,13 +1452,14 @@ dependencies = [
     { name = "requests" },
     { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
     { name = "torch", version = "2.15.0+cu134", source = { registry = "https://download.pytorch.org/whl/cu134" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "torchvision" },
+    { name = "torchvision", version = "0.29.2", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
+    { name = "torchvision", version = "0.29.2+cu134", source = { registry = "https://download.pytorch.org/whl/cu134" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "ultralytics-platform" },
     { name = "ultralytics-thop" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6d/eb/7016cdf683bf02c2b2d271b5d7c268112d76ffefd40b3545c0a6fe5837d0/ultralytics-8.4.216.tar.gz", hash = "sha256:af5f431d85c4e30a28bc0e6a0d926c8d6077754baad625babcee15d73f0d147e", size = 1332306, upload-time = "2026-11-20T03:31:43.672Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/75/0301078a3c99ade5f6131365246a0865bb882027efec11ecd2ce0af6ffe7/ultralytics-8.4.220.tar.gz", hash = "sha256:90038afc3f6176df2ff27218e949c2ab77798b686572e1991b2db8bb32656f32", size = 1335455, upload-time = "2026-11-26T18:17:30.901Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/b6/85328359ea4e3df07dc402a0a016cf6eb96ee63cbcc4a910219788e97010/ultralytics-8.4.216-py3-none-any.whl", hash = "sha256:0f143e9f7c35a8605be0824d8d6d090e9a74e2b667d67f099d4179c1e9d0127d", size = 1472402, upload-time = "2026-11-20T03:31:39.017Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/12/5b23f249cdad87909b55128f505b9f032204cf0774fe5a476ed47fd264d3/ultralytics-8.4.220-py3-none-any.whl", hash = "sha256:c5368c14600e043781354b8223b53d8ff5fcd65b350c843188203c29e39b0b06", size = 1474699, upload-time = "2026-11-26T18:17:26.551Z" },
 ]
 
 [[package]]
