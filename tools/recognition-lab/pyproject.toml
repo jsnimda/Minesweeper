@@ -16,6 +16,7 @@ dependencies = [
   "mss==10.2.0",
   "PyAutoGUI>=0.9.54",
   "torchvision",
+  "python-lucide>=0.5.13",
 ]
 
 [build-system]

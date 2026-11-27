@@ -1,16 +1,17 @@
-from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 import numpy as np
 import skia
 from PIL import Image
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, Slot
-from PySide6.QtGui import QImage, QPainter, QPixmap
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QSplitter, QPushButton, QFileDialog, QComboBox, QLabel, QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QTextEdit, QListWidget, QMessageBox, QInputDialog, QScrollArea, QToolBar)
+from PySide6.QtCore import QEvent, QSettings, QSize, Qt, QThread, Signal, QTimer, Slot
+from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPalette, QPainter, QPixmap
+from PySide6.QtWidgets import (QApplication, QDialog, QPushButton, QStackedWidget, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QDockWidget, QTabWidget, QToolButton, QFileDialog, QComboBox, QLabel, QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QTextEdit, QListWidget, QMessageBox, QInputDialog, QScrollArea, QToolBar)
 from .capture import Frame, capture_frame, monitors
 from .pipeline import Pipeline, Settings, ROOT, GEOMETRY_ROOT
 from .rendering import draw
-from .results import RecognitionResult
+from .preferences import DEFAULTS, PreferencesDialog
+from .appearance import apply_appearance
+from .icons import icon
 
 
 def skia_image(image):
@@ -32,6 +33,7 @@ class Canvas(QWidget):
         self.offset = [0., 0.]
         self.drag = None
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(200, 200)
 
     def fit(self):
@@ -40,6 +42,7 @@ class Canvas(QWidget):
             self.scale = min(self.width()/w, self.height()/h)
             self.offset = [(self.width()-w*self.scale)/2, (self.height()-h*self.scale)/2]
             self.update()
+            self.main.update_zoom_status()
 
     def paintEvent(self, event):
         if self.width() <= 0 or self.height() <= 0: return
@@ -93,8 +96,10 @@ class Canvas(QWidget):
         self.offset = [x-(x-self.offset[0])*factor, y-(y-self.offset[1])*factor]
         self.scale *= factor
         self.update()
+        self.main.update_zoom_status()
 
     def mousePressEvent(self, event):
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
         self.drag = event.position()
 
     def mouseReleaseEvent(self, event):
@@ -106,7 +111,11 @@ class Canvas(QWidget):
             self.offset[0] += p.x()-self.drag.x(); self.offset[1] += p.y()-self.drag.y()
             self.drag = p; self.update()
         if self.main.frame:
-            self.main.statusBar().showMessage(f'Image: {(p.x()-self.offset[0])/self.scale:.1f}, {(p.y()-self.offset[1])/self.scale:.1f}')
+            self.main.cursor_status.setText(f'Image: {(p.x()-self.offset[0])/self.scale:.1f}, {(p.y()-self.offset[1])/self.scale:.1f}')
+
+    def leaveEvent(self, event):
+        self.main.cursor_status.setText('Cursor: —')
+        super().leaveEvent(event)
 
 
 class Overlay(QWidget):
@@ -153,31 +162,121 @@ class MainWindow(QMainWindow):
         self.resize(1450, 850)
         self.pipeline = Pipeline(); self.frame = None; self.result = None; self.image_skia = None
         self.generation = 0; self.worker = None; self.folder_files = []; self.capture_in_progress = False
-        self.conflicting_controls = []
+        self.app_settings = QSettings('Minesweeper Recognition Lab', 'Recognition Lab')
+        self.preferences = self.read_preferences()
+        self.system_style = QApplication.style().objectName()
+        self.focus_state = None
+        self.folder_open = False
         self.overlay = Overlay(self)
-        bar = QToolBar(); self.addToolBar(bar)
-        for title, fn in [('Open image', self.open_image), ('Open folder', self.open_folder), ('Capture screen', lambda: self.capture(False)), ('Capture region', lambda: self.capture(True)), ('Save screenshot', self.save_image), ('Run YOLO', lambda: self.run('yolo')), ('Run geometry', lambda: self.run('geometry')), ('Run all', lambda: self.run('all')), ('Overlay', self.toggle_overlay), ('Fit', lambda: self.canvas.fit()), ('100%', self.actual_size)]:
-            action = bar.addAction(title); action.triggered.connect(fn)
-            if title in ('Run YOLO', 'Run geometry', 'Run all'): self.conflicting_controls.append(action)
-        splitter = QSplitter(); self.setCentralWidget(splitter)
-        left = QWidget(); ll = QVBoxLayout(left)
-        self.backend = QComboBox(); self.backend.addItems(['MSS', 'Qt']); self.backend.currentTextChanged.connect(self.refresh_monitors)
-        self.monitor = QComboBox(); self.highres = QCheckBox('MSS high resolution on macOS'); self.highres.setChecked(True)
-        self.hide_panel = QCheckBox('Hide lab during capture'); self.hide_panel.setChecked(True)
+        self.canvas = Canvas(self)
+        self.workspace = QStackedWidget()
+        self.setCentralWidget(self.workspace)
+        self.workspace.addWidget(self.canvas)
+        self.setDockNestingEnabled(True)
+
+        # Commands are shared by menus, toolbar, and model controls.
+        self.actions = {}
+        for key, title, fn in [
+            ('open_image', 'Open image…', self.open_image),
+            ('open_folder', 'Open folder…', self.open_folder),
+            ('capture_screen', 'Capture screen', lambda: self.capture(False)),
+            ('capture_region', 'Capture region…', lambda: self.capture(True)),
+            ('save', 'Save screenshot…', self.save_image),
+            ('yolo', 'Run detection', lambda: self.run('yolo')),
+            ('geometry', 'Run geometry', lambda: self.run('geometry')),
+            ('all', 'Run all', lambda: self.run('all')),
+            ('overlay', 'Toggle desktop overlay', self.toggle_overlay),
+            ('fit', 'Fit to window', self.canvas.fit),
+            ('actual', 'Actual size', self.actual_size),
+            ('mouse', 'Inspect mouse position', self.mouse_position),
+            ('load_yolo', 'Load YOLO', lambda: self.model_action('yolo', True)),
+            ('unload_yolo', 'Unload YOLO', lambda: self.model_action('yolo', False)),
+            ('load_phase', 'Load PhaseGridUNet', lambda: self.model_action('phase', True)),
+            ('unload_phase', 'Unload PhaseGridUNet', lambda: self.model_action('phase', False)),
+            ('preferences', 'Preferences…', self.edit_preferences),
+            ('quit', 'Quit', self.close),
+            ('reset_layout', 'Reset layout', self.reset_layout),
+            ('focus', 'Focus mode', self.toggle_focus),
+            ('grid', 'Show grid boundaries', self.toggle_grid),
+            ('exit_focus', 'Exit focus mode', self.exit_focus),
+        ]:
+            action = QAction(title, self)
+            action.triggered.connect(fn)
+            self.actions[key] = action
+        self.actions['focus'].setCheckable(True)
+        self.actions['grid'].setCheckable(True)
+        self.setup_shortcuts()
+        welcome = QWidget(); welcome.setAutoFillBackground(True)
+        welcome_palette = QPalette()
+        welcome_palette.setColor(QPalette.ColorRole.Window, QColor('#272727'))
+        welcome_palette.setColor(QPalette.ColorRole.WindowText, QColor('#eeeeee'))
+        welcome.setPalette(welcome_palette)
+        welcome_layout = QVBoxLayout(welcome); welcome_layout.setSpacing(14)
+        welcome_layout.addStretch()
+        heading = QLabel('Recognition Lab')
+        heading_font = heading.font(); heading_font.setPointSize(heading_font.pointSize() + 5); heading_font.setBold(True)
+        heading.setFont(heading_font); heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        welcome_layout.addWidget(heading)
+        message = QLabel('Open an image or capture a screen to begin inspection.')
+        message.setAlignment(Qt.AlignmentFlag.AlignCenter); message.setWordWrap(True); welcome_layout.addWidget(message)
+        welcome_buttons = QHBoxLayout(); welcome_buttons.addStretch()
+        for key in ('open_image', 'open_folder', 'capture_screen'):
+            button = QToolButton(); button.setDefaultAction(self.actions[key])
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly); welcome_buttons.addWidget(button)
+        welcome_buttons.addStretch(); welcome_layout.addLayout(welcome_buttons); welcome_layout.addStretch()
+        self.workspace.addWidget(welcome); self.workspace.setCurrentWidget(welcome)
+
+        explorer = QWidget(); explorer_layout = QVBoxLayout(explorer)
+        explorer_layout.setSpacing(8)
+        images_heading = QLabel('Images')
+        results_heading = QLabel('Recognition results')
+        for heading in (images_heading, results_heading):
+            font = heading.font(); font.setBold(True); heading.setFont(font)
         self.file_list = QListWidget(); self.file_list.currentRowChanged.connect(self.folder_selected)
+        self.images_empty = QLabel('No folder open.'); self.images_empty.setWordWrap(True)
+        self.open_folder_empty = QToolButton(); self.open_folder_empty.setDefaultAction(self.actions['open_folder'])
+        self.open_folder_empty.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.grid_list = QListWidget(); self.grid_list.currentRowChanged.connect(self.selection_changed)
-        for widget in [QLabel('Capture backend'), self.backend, self.monitor, self.highres, self.hide_panel, QLabel('Folder images'), self.file_list, QLabel('Detected grids (select to inspect)'), self.grid_list]: ll.addWidget(widget)
-        splitter.addWidget(left)
-        self.canvas = Canvas(self); splitter.addWidget(self.canvas)
+        self.results_empty = QLabel('No recognition results available.'); self.results_empty.setWordWrap(True)
+        explorer_layout.addWidget(images_heading)
+        explorer_layout.addWidget(self.images_empty)
+        explorer_layout.addWidget(self.open_folder_empty, 0, Qt.AlignmentFlag.AlignLeft)
+        explorer_layout.addWidget(self.file_list, 2)
+        explorer_layout.addSpacing(8)
+        explorer_layout.addWidget(results_heading)
+        explorer_layout.addWidget(self.results_empty)
+        explorer_layout.addWidget(self.grid_list, 1)
+        explorer_layout.addStretch(1)
+        self.explorer_layout = explorer_layout
+        self.explorer_dock = self.make_dock('Explorer', explorer, Qt.DockWidgetArea.LeftDockWidgetArea)
+
+        tabs = QTabWidget()
+        self.inspect = QTextEdit(); self.inspect.setReadOnly(True)
+        self.inspect.setPlaceholderText('Run recognition to inspect results.')
+        tabs.addTab(self.inspect, 'Inspect')
+        layers_panel = QWidget(); layers_form = QFormLayout(layers_panel)
+        self.heatmap = QComboBox(); self.heatmap.addItems(['None', 'Phase occupancy', 'Phase coverage', 'Tile horizontal phase', 'Tile vertical phase']); self.heatmap.currentIndexChanged.connect(self.redraw); layers_form.addRow('Heatmap', self.heatmap)
+        self.tile_inspect = self.spin(0, 0, 99999); self.tile_inspect.valueChanged.connect(self.redraw); layers_form.addRow('Phase tile index (zero-based)', self.tile_inspect)
+        self.layer_widgets = {}
+        for key, label in [('detections','Detections'),('crops','Crop boundaries'),('boundaries','Grid boundaries'),('centers','Cell centers'), ('tiles','Phase tile layout'), ('terminations','Phase observed terminations'), ('cell_support','Phase cell support')]:
+            check = QCheckBox(label); check.setChecked(key not in ('tiles', 'terminations', 'cell_support')); check.toggled.connect(self.redraw); self.layer_widgets[key] = check; layers_form.addRow(check)
+        self.actions['grid'].setChecked(self.layer_widgets['boundaries'].isChecked())
+        self.layer_widgets['boundaries'].toggled.connect(self.actions['grid'].setChecked)
+        self.overlay_layer_widgets = {}
+        for key, label in [('detections','Overlay detections'),('crops','Overlay crop boundaries'),('boundaries','Overlay grid boundaries'),('centers','Overlay cell centers')]:
+            check = QCheckBox(label); check.setChecked(True); check.toggled.connect(self.redraw); self.overlay_layer_widgets[key] = check; layers_form.addRow(check)
+        self.opacity = QDoubleSpinBox(); self.opacity.setRange(.1,1); self.opacity.setSingleStep(.1); self.opacity.setValue(.8); self.opacity.valueChanged.connect(self.change_opacity); layers_form.addRow('Overlay opacity', self.opacity)
+        tabs.addTab(self.scroll_panel(layers_panel), 'Layers')
+
         panel = QWidget(); form = QFormLayout(panel)
         self.yolo_path = QLineEdit(str(ROOT/'models/yolo.pt'))
         self.phase_path = QLineEdit(str(GEOMETRY_ROOT / 'runs/phase-baseline-v1/best.pt'))
+        self.yolo_path.setMinimumWidth(0); self.phase_path.setMinimumWidth(0)
         for name, field, key in [('YOLO model', self.yolo_path, 'yolo'), ('PhaseGridUNet model', self.phase_path, 'phase')]:
             row = QWidget(); layout = QHBoxLayout(row); layout.setContentsMargins(0,0,0,0); layout.addWidget(field)
-            browse = QPushButton('…'); browse.clicked.connect(lambda checked=False, f=field: self.choose_path(f)); layout.addWidget(browse)
-            load = QPushButton('Load'); load.clicked.connect(lambda checked=False, k=key: self.model_action(k, True)); layout.addWidget(load)
-            unload = QPushButton('Unload'); unload.clicked.connect(lambda checked=False, k=key: self.model_action(k, False)); layout.addWidget(unload)
-            self.conflicting_controls.extend([load, unload])
+            browse = QToolButton(); browse.setText('…'); browse.clicked.connect(lambda checked=False, f=field: self.choose_path(f)); layout.addWidget(browse)
+            for verb in ('load', 'unload'):
+                button = QToolButton(); button.setDefaultAction(self.actions[f'{verb}_{key}']); button.setText(verb.title()); layout.addWidget(button)
             form.addRow(name, row)
         self.loaded = QLabel('No models loaded'); self.loaded.setWordWrap(True); form.addRow('Loaded', self.loaded)
         self.device = QComboBox(); self.device.addItems(['auto','cpu','mps','cuda']); form.addRow('Device', self.device)
@@ -189,19 +288,254 @@ class MainWindow(QMainWindow):
         form.addRow('Tile size', self.tile); form.addRow('Tile overlap', self.overlap)
         self.mode.currentTextChanged.connect(self.update_tile_controls)
         self.update_tile_controls(self.mode.currentText())
-        self.heatmap = QComboBox(); self.heatmap.addItems(['None', 'Phase occupancy', 'Phase coverage', 'Tile horizontal phase', 'Tile vertical phase']); self.heatmap.currentIndexChanged.connect(self.redraw); form.addRow('Heatmap', self.heatmap)
-        self.tile_inspect = self.spin(0, 0, 99999); self.tile_inspect.valueChanged.connect(self.redraw); form.addRow('Phase tile index (zero-based)', self.tile_inspect)
-        self.layer_widgets = {}
-        for key, label in [('detections','Detections'),('crops','Crop boundaries'),('boundaries','Grid boundaries'),('centers','Cell centers'), ('tiles','Phase tile layout'), ('terminations','Phase observed terminations'), ('cell_support','Phase cell support')]:
-            check = QCheckBox(label); check.setChecked(key not in ('tiles', 'terminations', 'cell_support')); check.toggled.connect(self.redraw); self.layer_widgets[key] = check; form.addRow(check)
-        self.overlay_layer_widgets = {}
-        for key, label in [('detections','Overlay detections'),('crops','Overlay crop boundaries'),('boundaries','Overlay grid boundaries'),('centers','Overlay cell centers')]:
-            check = QCheckBox(label); check.setChecked(True); check.toggled.connect(self.redraw); self.overlay_layer_widgets[key] = check; form.addRow(check)
-        self.opacity = QDoubleSpinBox(); self.opacity.setRange(.1,1); self.opacity.setSingleStep(.1); self.opacity.setValue(.8); self.opacity.valueChanged.connect(self.change_opacity); form.addRow('Overlay opacity',self.opacity)
-        mouse = QPushButton('Inspect mouse position'); mouse.clicked.connect(self.mouse_position); form.addRow(mouse)
-        self.diagnostics = QTextEdit(); self.diagnostics.setReadOnly(True); self.diagnostics.setMinimumHeight(250); form.addRow('Diagnostics', self.diagnostics)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(panel); splitter.addWidget(scroll); splitter.setSizes([250,800,400])
+        self.backend = QComboBox(); self.backend.addItems(['MSS', 'Qt']); self.backend.currentTextChanged.connect(self.refresh_monitors)
+        self.monitor = QComboBox(); self.highres = QCheckBox('MSS high resolution on macOS'); self.highres.setChecked(True)
+        self.hide_panel = QCheckBox('Hide lab during capture'); self.hide_panel.setChecked(True)
+        form.addRow('Capture backend', self.backend); form.addRow('Monitor', self.monitor)
+        form.addRow(self.highres); form.addRow(self.hide_panel)
+        tabs.addTab(self.scroll_panel(panel), 'Settings')
+        self.inspector_dock = self.make_dock('Inspector', tabs, Qt.DockWidgetArea.RightDockWidgetArea)
+
+        diagnostic_tabs = QTabWidget()
+        self.diagnostics = QTextEdit(); self.diagnostics.setReadOnly(True)
+        self.performance = QTextEdit(); self.performance.setReadOnly(True)
+        self.diagnostics.setPlaceholderText('No image diagnostics available.')
+        self.performance.setPlaceholderText('No timing information available.')
+        diagnostic_tabs.addTab(self.diagnostics, 'Diagnostics'); diagnostic_tabs.addTab(self.performance, 'Performance')
+        self.diagnostics_dock = self.make_dock('Diagnostics', diagnostic_tabs, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
+        self.set_default_dock_sizes()
+
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu('File')
+        for key in ('open_image', 'open_folder', 'capture_screen', 'capture_region', 'save'): file_menu.addAction(self.actions[key])
+        file_menu.addSeparator(); file_menu.addAction(self.actions['preferences']); file_menu.addAction(self.actions['quit'])
+        view_menu = menu_bar.addMenu('View')
+        for key in ('fit', 'actual', 'grid', 'overlay', 'focus', 'reset_layout'): view_menu.addAction(self.actions[key])
+        view_menu.addSeparator()
+        for dock in (self.explorer_dock, self.inspector_dock, self.diagnostics_dock): view_menu.addAction(dock.toggleViewAction())
+        recognition_menu = menu_bar.addMenu('Recognition')
+        for key in ('yolo', 'geometry', 'all'): recognition_menu.addAction(self.actions[key])
+        models_menu = menu_bar.addMenu('Models')
+        for key in ('load_yolo', 'unload_yolo', 'load_phase', 'unload_phase'): models_menu.addAction(self.actions[key])
+        tools_menu = menu_bar.addMenu('Tools'); tools_menu.addAction(self.actions['mouse'])
+        self.bar = QToolBar('Main', self); self.bar.setObjectName('mainToolbar'); self.addToolBar(self.bar)
+        self.bar.setIconSize(QSize(18, 18))
+        for key, label in [('open_image', 'Open image'), ('open_folder', 'Open folder'),
+                           ('capture_screen', 'Capture screen'), ('capture_region', 'Capture region'),
+                           ('yolo', 'Detect'), ('geometry', 'Geometry'), ('all', 'Run all'),
+                           ('fit', 'Fit'), ('actual', 'Actual size'), ('focus', 'Focus'),
+                           ('preferences', 'Preferences')]:
+            self.actions[key].setIconText(label)
+        for group in (('open_image', 'open_folder', 'capture_screen', 'capture_region'),
+                      ('yolo', 'geometry', 'all'), ('fit', 'actual', 'focus'), ('preferences',)):
+            if self.bar.actions(): self.bar.addSeparator()
+            for key in group: self.bar.addAction(self.actions[key])
+
+        self.image_status = QLabel('Image: —'); self.zoom_status = QLabel('Zoom: —')
+        self.cursor_status = QLabel('Cursor: —'); self.device_status = QLabel('Device setting: auto')
+        for label in (self.image_status, self.zoom_status, self.cursor_status, self.device_status): self.statusBar().addPermanentWidget(label)
+        self.device.currentTextChanged.connect(lambda value: self.device_status.setText(f'Device setting: {value}'))
+        self.statusBar().showMessage('Ready')
         self.refresh_monitors()
+        self.apply_preferences()
+        self.restore_workspace()
+        self.update_empty_states()
+        self.update_action_states()
+        QApplication.instance().paletteChanged.connect(self.update_action_icons)
+        QApplication.instance().installEventFilter(self)
+
+    def make_dock(self, title, widget, area):
+        dock = QDockWidget(title, self); dock.setObjectName(title.lower() + 'Dock')
+        dock.setWidget(widget); self.addDockWidget(area, dock)
+        return dock
+
+    def scroll_panel(self, panel):
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(panel)
+        return scroll
+
+    def update_zoom_status(self):
+        self.zoom_status.setText(f'Zoom: {self.canvas.scale * 100:.1f}%')
+
+    def setup_shortcuts(self):
+        for key, shortcut in [('open_image', QKeySequence.StandardKey.Open),
+                              ('save', QKeySequence.StandardKey.Save),
+                              ('preferences', QKeySequence.StandardKey.Preferences),
+                              ('quit', QKeySequence.StandardKey.Quit)]:
+            self.actions[key].setShortcuts(shortcut)
+        self.actions['open_folder'].setShortcut(QKeySequence('Ctrl+Shift+O'))
+        self.actions['focus'].setShortcut(QKeySequence('Ctrl+Shift+F'))
+        for key, shortcut in [('fit', 'F'), ('actual', '1'), ('grid', 'G'), ('exit_focus', 'Escape')]:
+            action = self.actions[key]
+            action.setShortcut(QKeySequence(shortcut))
+            action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+            self.canvas.addAction(action)
+
+    def read_preferences(self):
+        values = {}
+        for key, default in DEFAULTS.items():
+            try:
+                value = self.app_settings.value('preferences/' + key, default, type=type(default))
+            except (TypeError, ValueError):
+                value = default
+            if key == 'appearance' and value not in ('system', 'light', 'dark'): value = default
+            if key == 'toolbar' and value not in ('both', 'icons', 'text'): value = default
+            values[key] = value
+        return values
+
+    def edit_preferences(self):
+        dialog = PreferencesDialog(self.preferences, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.preferences = dialog.values()
+            for key, value in self.preferences.items(): self.app_settings.setValue('preferences/' + key, value)
+            self.apply_preferences()
+
+    def apply_preferences(self):
+        apply_appearance(self.preferences['appearance'], self.system_style)
+        styles = {'both': Qt.ToolButtonStyle.ToolButtonTextBesideIcon,
+                  'icons': Qt.ToolButtonStyle.ToolButtonIconOnly, 'text': Qt.ToolButtonStyle.ToolButtonTextOnly}
+        self.bar.setToolButtonStyle(styles[self.preferences['toolbar']])
+        self.update_action_icons()
+
+    def update_action_icons(self, *args):
+        names = {'open_image': 'folder-open', 'open_folder': 'folder', 'capture_screen': 'monitor',
+                 'capture_region': 'scan-line', 'yolo': 'scan', 'geometry': 'grid-3x3',
+                 'all': 'play', 'fit': 'maximize', 'actual': 'scaling',
+                 'focus': 'panels-top-left', 'preferences': 'settings', 'save': 'save'}
+        palette = QApplication.palette()
+        for key, name in names.items():
+            self.actions[key].setIcon(icon(name, palette))
+        self.update_action_states()
+
+    def update_command_tips(self, prerequisites=None):
+        descriptions = {'open_image': 'Open an image file', 'open_folder': 'Browse images in a folder',
+                        'capture_screen': 'Capture the selected screen', 'capture_region': 'Capture a region of the selected screen',
+                        'yolo': 'Run grid detection', 'geometry': 'Run geometry on detected grids',
+                        'all': 'Run detection and geometry', 'fit': 'Fit the image to the workspace',
+                        'actual': 'View the image at actual size', 'focus': 'Show or hide the workspace panels',
+                        'preferences': 'Change application preferences', 'save': 'Save the original image'}
+        for key, description in descriptions.items():
+            missing = prerequisites.get(key, []) if prerequisites else []
+            tip = description + ('. Requires: ' + ', '.join(missing) if missing else '')
+            action = self.actions[key]
+            shortcut = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+            action.setToolTip(tip + (f' ({shortcut})' if shortcut else ''))
+            action.setStatusTip(tip)
+
+    def eventFilter(self, watched, event):
+        if (event.type() == QEvent.Type.ToolTip and not self.preferences['tooltips']
+                and isinstance(watched, (QToolButton, QPushButton)) and self.isAncestorOf(watched)):
+            return True
+        return super().eventFilter(watched, event)
+
+    def restore_workspace(self):
+        if not self.preferences['restore_workspace']: return
+        geometry = self.app_settings.value('workspace/geometry')
+        state = self.app_settings.value('workspace/state')
+        if geometry is not None:
+            try: self.restoreGeometry(geometry)
+            except (TypeError, ValueError): pass
+        if state is not None:
+            try:
+                if not self.restoreState(state, 1): self.reset_layout()
+            except (TypeError, ValueError): self.reset_layout()
+
+    def save_workspace(self):
+        # Focus mode hides docks temporarily; save its captured normal state instead.
+        self.app_settings.setValue('workspace/geometry', self.saveGeometry())
+        self.app_settings.setValue('workspace/state', self.focus_state if self.focus_state is not None else self.saveState(1))
+        self.app_settings.sync()
+
+    def reset_layout(self):
+        if self.focus_state is not None: self.exit_focus()
+        for dock, area in ((self.explorer_dock, Qt.DockWidgetArea.LeftDockWidgetArea),
+                           (self.inspector_dock, Qt.DockWidgetArea.RightDockWidgetArea),
+                           (self.diagnostics_dock, Qt.DockWidgetArea.BottomDockWidgetArea)):
+            dock.setFloating(False); self.removeDockWidget(dock); self.addDockWidget(area, dock); dock.show()
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
+        self.removeToolBar(self.bar); self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.bar); self.bar.show()
+        self.set_default_dock_sizes()
+
+    def set_default_dock_sizes(self):
+        self.resizeDocks([self.explorer_dock, self.inspector_dock], [250, 320], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.diagnostics_dock], [125], Qt.Orientation.Vertical)
+
+    def toggle_focus(self, checked):
+        if checked:
+            self.focus_state = self.saveState(1)
+            self.bar.show()
+            docks = (self.explorer_dock, self.inspector_dock, self.diagnostics_dock)
+            self.focus_dock_actions_enabled = [dock.toggleViewAction().isEnabled() for dock in docks]
+            for dock in docks:
+                dock.hide()
+                dock.toggleViewAction().setEnabled(False)
+        else:
+            self.exit_focus()
+        self.update_action_states()
+
+    def exit_focus(self):
+        if self.focus_state is None: return
+        state, self.focus_state = self.focus_state, None
+        restored = self.restoreState(state, 1)
+        for dock, enabled in zip((self.explorer_dock, self.inspector_dock, self.diagnostics_dock),
+                                 self.focus_dock_actions_enabled):
+            dock.toggleViewAction().setEnabled(enabled)
+        if not restored:
+            self.reset_layout()
+        self.actions['focus'].setChecked(False)
+        self.update_action_states()
+
+    def toggle_grid(self, checked):
+        self.layer_widgets['boundaries'].setChecked(checked)
+
+    def update_empty_states(self):
+        self.images_empty.setText('No supported images in this folder.' if self.folder_open else 'No folder open.')
+        self.images_empty.setVisible(not self.folder_files)
+        self.open_folder_empty.setVisible(not self.folder_files)
+        self.file_list.setVisible(bool(self.folder_files))
+        self.results_empty.setText('No detected grids.' if self.result is not None else 'No recognition results available.')
+        self.results_empty.setVisible(self.grid_list.count() == 0)
+        self.grid_list.setVisible(self.grid_list.count() != 0)
+        self.explorer_layout.setStretch(self.explorer_layout.count() - 1,
+                                        0 if self.folder_files or self.grid_list.count() else 1)
+        if self.result is None:
+            self.inspect.setPlaceholderText('Run recognition to inspect results.')
+        elif self.grid_list.count() and self.selected_detection() is None:
+            self.inspect.setPlaceholderText('Select a detected grid to inspect it.')
+        else:
+            self.inspect.setPlaceholderText('No result properties available.')
+
+    def update_action_states(self):
+        busy = self.worker is not None
+        capturing = self.capture_in_progress
+        image = self.frame is not None
+        result = self.result is not None
+        grids = result and any(d.name == 'grid' for d in self.result.detections)
+        mapped = image and self.frame.mapping is not None
+        for key in ('open_image', 'open_folder', 'capture_screen', 'capture_region'):
+            self.actions[key].setEnabled(not capturing)
+        self.actions['save'].setEnabled(image and not capturing)
+        yolo_loaded = self.pipeline.yolo is not None
+        phase_loaded = self.pipeline.phase is not None
+        idle = not busy and not capturing
+        self.actions['yolo'].setEnabled(image and yolo_loaded and idle)
+        self.actions['geometry'].setEnabled(image and bool(grids) and phase_loaded and idle)
+        self.actions['all'].setEnabled(image and yolo_loaded and phase_loaded and idle)
+        common = ([] if image else ['an image']) + ([] if idle else ['the current operation to finish'])
+        self.update_command_tips({
+            'yolo': common + ([] if yolo_loaded else ['the YOLO model']),
+            'geometry': common + ([] if grids else ['detected grids']) + ([] if phase_loaded else ['the PhaseGridUNet model']),
+            'all': common + ([] if yolo_loaded else ['the YOLO model']) + ([] if phase_loaded else ['the PhaseGridUNet model']),
+        })
+        self.actions['overlay'].setEnabled(not capturing and ((result and mapped) or self.overlay.isVisible()))
+        self.file_list.setEnabled(not capturing)
+        for key in ('fit', 'actual', 'grid'): self.actions[key].setEnabled(image)
+        for key in ('load_yolo', 'load_phase'): self.actions[key].setEnabled(not busy and not capturing)
+        self.actions['unload_yolo'].setEnabled(not busy and not capturing and self.pipeline.yolo is not None)
+        self.actions['unload_phase'].setEnabled(not busy and not capturing and self.pipeline.phase is not None)
+        self.actions['exit_focus'].setEnabled(self.focus_state is not None)
 
     def update_tile_controls(self, mode):
         for widget in (self.tile, self.overlap): widget.setEnabled(mode == 'tiled')
@@ -218,7 +552,7 @@ class MainWindow(QMainWindow):
     def selected_grid(self):
         if not self.result: return None
         return next ( (g for g in self.result.grids if g.detection_index == self.selected_detection()), None)
-    def actual_size(self): self.canvas.scale=1. / self.canvas.devicePixelRatioF(); self.canvas.offset=[0.,0.]; self.canvas.update()
+    def actual_size(self): self.canvas.scale=1. / self.canvas.devicePixelRatioF(); self.canvas.offset=[0.,0.]; self.canvas.update(); self.update_zoom_status()
     def choose_path(self, field):
         path, _ = QFileDialog.getOpenFileName(self, 'Choose file', field.text())
         if path: field.setText(path)
@@ -229,7 +563,10 @@ class MainWindow(QMainWindow):
         except Exception as exc: self.diagnostics.setPlainText(f'Monitor enumeration failed: {exc}')
     def set_frame(self, frame):
         self.generation += 1; self.overlay.hide(); self.frame = frame; self.result = None
-        self.image_skia = skia_image(frame.image); self.grid_list.clear(); self.diagnostics.setPlainText(frame.diagnostics); self.canvas.fit()
+        self.image_skia = skia_image(frame.image); self.grid_list.clear(); self.show_diagnostics()
+        self.workspace.setCurrentWidget(self.canvas); self.canvas.fit()
+        self.image_status.setText(f'Image: {frame.image.width} × {frame.image.height}'); self.cursor_status.setText('Cursor: —')
+        self.update_empty_states(); self.update_action_states()
     def open_image(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Open image', '', 'Images (*.png *.jpg *.jpeg *.bmp *.webp)')
         if path: self.load_image(path)
@@ -241,7 +578,8 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, 'Open folder')
         if folder:
             self.folder_files = sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in ('.png','.jpg','.jpeg','.bmp','.webp'))
-            self.file_list.clear(); self.file_list.addItems([p.name for p in self.folder_files])
+            self.folder_open = True
+            self.file_list.clear(); self.file_list.addItems([p.name for p in self.folder_files]); self.update_empty_states()
     def folder_selected(self, index):
         if 0 <= index < len(self.folder_files): self.load_image(self.folder_files[index])
     def save_image(self):
@@ -264,6 +602,7 @@ class MainWindow(QMainWindow):
                 if rect[0]+rect[2] > mw or rect[1]+rect[3] > mh: raise ValueError()
             except ValueError: QMessageBox.warning(self,'Capture','Enter a rectangle contained within the monitor'); return
         self.capture_in_progress = True
+        self.update_action_states()
         overlay_visible = self.overlay.isVisible(); panel_visible = self.isVisible()
         self.overlay.hide()
         if self.hide_panel.isChecked(): self.hide()
@@ -276,6 +615,7 @@ class MainWindow(QMainWindow):
             finally:
                 self.capture_in_progress = False
                 if panel_visible: self.show()
+                self.update_action_states()
         QTimer.singleShot(250, finish)
     def settings(self):
         return Settings(self.device.currentText(), self.imgsz.value(), self.conf.value(), self.padding.value(), self.mode.currentText(), self.tile.value(), self.overlap.value())
@@ -283,7 +623,7 @@ class MainWindow(QMainWindow):
         if self.worker is not None: return
         self.statusBar().showMessage('Processing…'); self.worker = Worker(fn, self.generation)
         self.worker_done = done; self.guard_generation = guard_generation
-        for control in self.conflicting_controls: control.setEnabled(False)
+        self.update_action_states()
         self.worker.succeeded.connect(self.worker_succeeded)
         self.worker.failed.connect(self.worker_failed)
         self.worker.finished.connect(self.worker_finished); self.worker.start()
@@ -296,7 +636,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def worker_finished(self):
         self.worker = None
-        for control in self.conflicting_controls: control.setEnabled(True)
+        self.update_action_states()
         self.statusBar().showMessage('Ready')
     def model_action(self, key, load):
         if self.worker is not None: return
@@ -307,7 +647,9 @@ class MainWindow(QMainWindow):
             if key == 'yolo': self.pipeline.load_yolo(path)
             else: self.pipeline.load_phase(path)
         self.start_worker(action, lambda _: self.update_loaded(), guard_generation=False)
-    def update_loaded(self): self.loaded.setText(f'YOLO: {self.pipeline.yolo_path or "unloaded"}\nPhaseGridUNet: {self.pipeline.phase_path or "unloaded"}')
+    def update_loaded(self):
+        self.loaded.setText(f'YOLO: {self.pipeline.yolo_path or "unloaded"}\nPhaseGridUNet: {self.pipeline.phase_path or "unloaded"}')
+        self.update_action_states()
     def run(self, mode):
         if self.worker is not None: return
         if self.frame is None: QMessageBox.warning(self,'Recognition','Open or capture an image first'); return
@@ -326,25 +668,32 @@ class MainWindow(QMainWindow):
             if d.name == 'grid':
                 self.grid_list.addItem(f'Grid {i}: {d.confidence:.3f}'); self.grid_list.item(self.grid_list.count()-1).setData(Qt.ItemDataRole.UserRole,i)
         if self.grid_list.count(): self.grid_list.setCurrentRow(0)
-        self.show_diagnostics(); self.redraw()
-    def selection_changed(self, *args): self.show_diagnostics(); self.redraw()
+        self.show_diagnostics(); self.redraw(); self.update_empty_states(); self.update_action_states()
+    def selection_changed(self, *args):
+        self.show_diagnostics(); self.redraw(); self.update_empty_states()
     def show_diagnostics(self):
         if not self.frame: return
-        text = self.frame.diagnostics
+        details = self.frame.diagnostics
+        properties = ''
+        timing = ''
         if self.result:
-            text += '\n\nDetections:\n' + '\n'.join(f'{d.name} {d.confidence:.3f} {tuple(round(x,1) for x in d.box)}' for d in self.result.detections)
-            text += '\n\n' + '\n'.join(f'{k}: {v:.1f}' for k,v in self.result.timings.items())
+            properties = 'Detections:\n' + ('\n'.join(f'{d.name} {d.confidence:.3f} {tuple(round(x,1) for x in d.box)}' for d in self.result.detections) or 'No detections.')
+            if self.grid_list.count() and self.selected_detection() is None:
+                properties += '\n\nSelect a detected grid to inspect it.'
+            timing = '\n'.join(f'{k}: {v:.1f}' for k,v in self.result.timings.items())
             grid = self.selected_grid()
             if grid:
                 validation_status = grid.validation.status if grid.validation else 'no hypothesis'
                 validation_reasons = grid.validation.reasons if grid.validation else ('no hypothesis',)
-                text += f'\n\nCrop: {grid.crop.box}; clipped: {grid.crop.clipped}\nDecoder: {grid.decoding.status}\nStrict: {validation_status}\nReasons: {", ".join(validation_reasons) or "none"}\nCompleteness may be uncertain, especially at image boundaries.\n'
+                properties += f'\n\nCrop: {grid.crop.box}; clipped: {grid.crop.clipped}\nDecoder: {grid.decoding.status}\nStrict: {validation_status}\nReasons: {", ".join(validation_reasons) or "none"}\nCompleteness may be uncertain, especially at image boundaries.\n'
                 for i,(xs,ys,score) in enumerate(grid.hypotheses):
                     label = 'accepted board' if grid.validation and grid.validation.accepted and i == 0 else 'unvalidated candidate'
-                    text += f'\nCandidate {i+1} ({label}): {len(ys)-1} rows × {len(xs)-1} columns; pitch {np.mean(np.diff(xs)):.2f} × {np.mean(np.diff(ys)):.2f}; origin {xs[0]:.2f}, {ys[0]:.2f}; score {score:.4f}'
-                text += '\n' + '\n'.join(f'{k}: {v}' for k,v in grid.diagnostics.items())
-                text += '\n' + '\n'.join(f'{k}: {v:.1f}' for k,v in grid.timings.items())
-        self.diagnostics.setPlainText(text)
+                    properties += f'\nCandidate {i+1} ({label}): {len(ys)-1} rows × {len(xs)-1} columns; pitch {np.mean(np.diff(xs)):.2f} × {np.mean(np.diff(ys)):.2f}; origin {xs[0]:.2f}, {ys[0]:.2f}; score {score:.4f}'
+                details += '\n\nSelected grid:\n' + '\n'.join(f'{k}: {v}' for k,v in grid.diagnostics.items())
+                timing += '\n\nSelected grid:\n' + '\n'.join(f'{k}: {v:.1f}' for k,v in grid.timings.items())
+        self.inspect.setPlainText(properties)
+        self.diagnostics.setPlainText(details)
+        self.performance.setPlainText(timing)
     def toggle_overlay(self):
         if self.overlay.isVisible(): self.overlay.hide(); return
         try:
@@ -359,6 +708,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self,'Coordinate diagnostics',f'PyAutoGUI: {p}\nQt logical desktop: {q.x()}, {q.y()}\nThese coordinate systems can differ, especially on secondary monitors.')
         except Exception as exc: QMessageBox.warning(self,'Mouse diagnostics',str(exc))
     def closeEvent(self, event):
+        if self.capture_in_progress:
+            QMessageBox.information(self, 'Capture', 'Wait for the current capture to finish before closing.'); event.ignore(); return
         if self.worker is not None:
             QMessageBox.information(self, 'Processing', 'Wait for the current job to finish before closing.'); event.ignore(); return
+        self.save_workspace()
+        QApplication.instance().removeEventFilter(self)
         self.overlay.close(); event.accept()

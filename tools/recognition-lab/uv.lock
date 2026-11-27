@@ -1151,6 +1151,15 @@ wheels = [
 ]
 
 [[package]]
+name = "python-lucide"
+version = "0.5.13"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/15/864864b70eb3a82588ea6f3e4a9ade496d7b9107095d56a560447763e978/python_lucide-0.5.13.tar.gz", hash = "sha256:1b0f399ab5838c13bc063c49e0e44152a9906a5d83bd4e0cc54e90d10077498d", size = 559620, upload-time = "2026-11-15T21:56:48.27Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/19/7a/4a233951a9953ae8e8f3082ea89070960a65d66bf354f1b3e94e34ec0414/python_lucide-0.5.13-py3-none-any.whl", hash = "sha256:e1fe8bb26e20c74fdd8d0120938199bb964a98a56fd0352ba8dc9d5b6b94b25e", size = 802019, upload-time = "2026-11-15T21:56:46.829Z" },
+]
+
+[[package]]
 name = "python3-xlib"
 version = "0.15"
 source = { registry = "https://pypi.org/simple" }
@@ -1191,6 +1200,7 @@ dependencies = [
     { name = "pillow" },
     { name = "pyautogui" },
     { name = "pyside6" },
+    { name = "python-lucide" },
     { name = "pyyaml" },
     { name = "skia-python" },
     { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
@@ -1213,6 +1223,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "pyautogui", specifier = ">=0.9.54" },
     { name = "pyside6" },
+    { name = "python-lucide", specifier = ">=0.5.13" },
     { name = "pyyaml", specifier = ">=6.0.4" },
     { name = "skia-python", specifier = ">=144.1" },
     { name = "torch", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'", specifier = "==2.15.0" },
