@@ -111,6 +111,8 @@ def test_early_stopping_ties_and_resume(tmp_path, monkeypatch, capsys):
     best = torch.load(tmp_path / 'run' / 'best.pt', map_location='cpu', weights_only=False)
     assert len(history) == last['epoch'] == 4 and best['epoch'] == last['best_epoch'] == 2
     assert last['epochs_without_improvement'] == 2 and last['stopping_reason'] == 'early_stopping'
+    summary = json.loads((tmp_path / 'run' / 'summary.json').read_text())
+    assert summary['stopping_reason'] == 'early_stopping' and summary['epochs_without_improvement'] == 2
     assert train(config, resume=True) == history
     assert 'already stopped' in capsys.readouterr().out
 
@@ -303,3 +305,56 @@ def test_cuda_amp_overflow_skips_and_recovers():
     with pytest.raises(FloatingPointError, match='no successful optimizer updates'):
         run_epoch(model, batches, device, 1., optimizer, scaler, True, epoch=2)
     handle.remove()
+
+
+def test_performance_sample_counts_and_progress(monkeypatch):
+    class Fixed(torch.nn.Module):
+        def forward(self, image): return image
+    class Progress:
+        calls = []
+        def __init__(self, iterable, **kwargs):
+            self.iterable = iterable
+            self.disabled = kwargs['disable']
+            self.postfixes = []
+            self.calls.append(self)
+        def __iter__(self): return iter(self.iterable)
+        def set_postfix(self, **kwargs): self.postfixes.append(kwargs)
+    monkeypatch.setattr(trainer, 'tqdm', Progress)
+    image = torch.zeros(3, 5, 1, 1)
+    mask = torch.ones(3, 1, 1, dtype=torch.bool)
+    loader = DataLoader(list(zip(image, image, mask, mask, [True] * 3)), batch_size=2)
+    for enabled in (False, True):
+        result = run_epoch(Fixed(), loader, torch.device('cpu'), 1., progress=enabled)
+        assert result['samples'] == 3 and result['seconds'] >= 0
+        if result['seconds'] > 0:
+            assert result['samples_per_second'] == pytest.approx(3 / result['seconds'])
+        assert Progress.calls[-1].disabled is not enabled
+        assert len(Progress.calls[-1].postfixes) == (2 if enabled else 0)
+
+
+def test_summary_resume_recovery_and_legacy_performance(tmp_path, monkeypatch):
+    from dataclasses import replace
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    out = tmp_path / 'run'
+    config = Config(str(root), str(out), epochs=1, device='cpu')
+    fake_epochs(monkeypatch, [1.]); first = train(config)
+    summary = json.loads((out / 'summary.json').read_text())
+    assert summary['completed_epochs'] == summary['epoch_limit'] == 1
+    assert summary['stopping_reason'] == 'epoch_limit' and summary['best_epoch'] == 1
+    assert summary['successful_updates'] == 1 and summary['total_training_seconds'] >= 0
+    assert first[0]['performance']['epoch_seconds'] >= 0
+    (out / 'summary.json').unlink()
+    train(config, resume=True)
+    assert json.loads((out / 'summary.json').read_text()) == summary
+    fake_epochs(monkeypatch, [2.]); history = train(replace(config, epochs=2), resume=True)
+    summary = json.loads((out / 'summary.json').read_text())
+    assert summary['successful_updates'] == 2
+    assert summary['total_training_seconds'] == pytest.approx(sum(r['performance']['epoch_seconds'] for r in history))
+    state = torch.load(out / 'last.pt', map_location='cpu', weights_only=False)
+    state['history'][0].pop('performance')
+    torch.save(state, out / 'last.pt')
+    (out / 'summary.json').unlink()
+    train(replace(config, epochs=2), resume=True)
+    summary = json.loads((out / 'summary.json').read_text())
+    assert summary['total_training_seconds'] is None
+    assert summary['aggregate_samples_per_second']['train'] is None
