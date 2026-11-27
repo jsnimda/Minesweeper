@@ -12,6 +12,7 @@ from grid_geometry.dataset.loader import PhaseDataset
 from grid_geometry.phase.evaluate import geometry_record, summarize
 from grid_geometry.phase.metrics import TargetMetrics
 from grid_geometry.phase.train import Config, TrainingDataset, run_epoch, train
+import grid_geometry.phase.train as trainer
 
 
 def dataset(root):
@@ -86,3 +87,219 @@ def test_global_summary_separates_complete_partial_and_negative():
     assert summary['complete_with_geometry'] == 1
     assert summary['partial_samples'] == 1
     assert summary['negative_accepted'] == 0
+
+
+def fake_epochs(monkeypatch, values):
+    values = iter(values)
+    def run(model, loader, device, weight, optimizer=None, scaler=None, amp=False, *, epoch=None):
+        if optimizer is not None:
+            optimizer.step()
+            value = 1.0
+        else:
+            value = next(values)
+        return {'metrics': {'all': {'loss': value, 'phase_loss': value, 'occupancy_loss': value}},
+                'seconds': 0., 'successful_updates': int(optimizer is not None), 'skipped_updates': 0}
+    monkeypatch.setattr(trainer, 'run_epoch', run)
+
+
+def test_early_stopping_ties_and_resume(tmp_path, monkeypatch, capsys):
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    config = Config(str(root), str(tmp_path / 'run'), epochs=10, patience=2, device='cpu')
+    fake_epochs(monkeypatch, [3., 2., 2., 2.])
+    history = train(config)
+    last = torch.load(tmp_path / 'run' / 'last.pt', map_location='cpu', weights_only=False)
+    best = torch.load(tmp_path / 'run' / 'best.pt', map_location='cpu', weights_only=False)
+    assert len(history) == last['epoch'] == 4 and best['epoch'] == last['best_epoch'] == 2
+    assert last['epochs_without_improvement'] == 2 and last['stopping_reason'] == 'early_stopping'
+    assert train(config, resume=True) == history
+    assert 'already stopped' in capsys.readouterr().out
+
+
+def test_improvement_resets_patience_for_selected_component(tmp_path, monkeypatch):
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    config = Config(str(root), str(tmp_path / 'run'), epochs=6, patience=2,
+                    selection_metric='phase_loss', device='cpu')
+    fake_epochs(monkeypatch, [3., 3., 2., 2., 2.])
+    history = train(config)
+    assert [h['epochs_without_improvement'] for h in history] == [0, 1, 0, 1, 2]
+    assert history[-1]['best_epoch'] == 3 and history[-1]['stopping_reason'] == 'early_stopping'
+
+
+def test_epoch_extension_resume_counter_and_learning_rate(tmp_path, monkeypatch, capsys):
+    from dataclasses import replace
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    config = Config(str(root), str(tmp_path / 'run'), epochs=2, patience=2, device='cpu', scheduler='step', step_size=1, gamma=.5)
+    fake_epochs(monkeypatch, [1., 1.])
+    history = train(config)
+    assert [h['learning_rate'] for h in history] == pytest.approx([.001, .0005])
+    assert history[-1]['epochs_without_improvement'] == 1
+    assert train(config, resume=True) == history
+    assert 'already completed' in capsys.readouterr().out
+    fake_epochs(monkeypatch, [1.])
+    history = train(replace(config, epochs=5), resume=True)
+    assert len(history) == 3 and history[-1]['stopping_reason'] == 'early_stopping'
+    assert history[-1]['learning_rate'] == pytest.approx(.00025)
+
+
+def test_legacy_resume_and_sidecar_recovery(tmp_path, monkeypatch):
+    from dataclasses import replace
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    out = tmp_path / 'run'
+    config = Config(str(root), str(out), epochs=1, device='cpu')
+    fake_epochs(monkeypatch, [1.])
+    train(config)
+    state = torch.load(out / 'last.pt', map_location='cpu', weights_only=False)
+    for key in ('checkpoint_version', 'best_epoch', 'epochs_without_improvement', 'stopping_reason', 'amp_requested', 'amp_effective'):
+        state.pop(key)
+    state['config'].pop('patience')
+    torch.save(state, out / 'last.pt')
+    (out / 'best.pt').unlink(); (out / 'history.json').unlink()
+    fake_epochs(monkeypatch, [2.])
+    history = train(replace(config, epochs=2), resume=True)
+    assert len(history) == 2 and json.loads((out / 'history.json').read_text()) == history
+    assert torch.load(out / 'best.pt', map_location='cpu', weights_only=False)['epoch'] == 1
+    (out / 'best.pt').unlink()
+    with pytest.raises(ValueError, match='best.pt is missing or inconsistent'):
+        train(replace(config, epochs=3), resume=True)
+    (out / 'best.pt').write_bytes(b'corrupt checkpoint')
+    with pytest.raises(ValueError, match='best.pt is missing or inconsistent'):
+        train(replace(config, epochs=3), resume=True)
+
+
+def test_fingerprint_and_dimensions_and_patience(tmp_path, monkeypatch):
+    from dataclasses import replace
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    config = Config(str(root), str(tmp_path / 'run'), epochs=1, device='cpu')
+    fake_epochs(monkeypatch, [1.]); train(config)
+    (root / 'manifest.jsonl').write_text('changed')
+    with pytest.raises(ValueError, match='inventory changed'):
+        train(replace(config, epochs=2), resume=True)
+    settings = json.loads((root / 'config.json').read_text()); settings['input_size'] = [31, 32]
+    (root / 'config.json').write_text(json.dumps(settings))
+    with pytest.raises(ValueError, match='multiples of 8'):
+        train(replace(config, output_dir=str(tmp_path / 'other')))
+    for patience in (0, -1, True, 1.5):
+        with pytest.raises(ValueError, match='patience'):
+            replace(config, patience=patience)
+
+
+def test_epoch_metrics_weight_pixels_across_short_batches():
+    class Fixed(torch.nn.Module):
+        def forward(self, image): return image
+    logits = torch.zeros(3, 5, 1, 2)
+    target = torch.zeros_like(logits)
+    target[0, :4] = 1.; target[1, :4] = .5
+    pm = torch.tensor([[[1, 1]], [[1, 0]], [[0, 0]]], dtype=torch.bool)
+    om = torch.tensor([[[1, 1]], [[1, 0]], [[1, 1]]], dtype=torch.bool)
+    loader = DataLoader(list(zip(logits, target, pm, om, [True, True, False])), batch_size=2)
+    result = run_epoch(Fixed(), loader, torch.device('cpu'), 2.)['metrics']['all']
+    assert result['phase_pixels'] == 3 and result['occupancy_pixels'] == 5
+    assert result['phase_loss'] == pytest.approx((2 + .25) / 3)
+    assert result['occupancy_loss'] == pytest.approx(np.log(2))
+    assert result['loss'] == pytest.approx((2 + .25) / 3 + 2 * np.log(2))
+
+
+def test_nonfinite_batch_logits_loss_and_gradients(monkeypatch):
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__(); self.weight = torch.nn.Parameter(torch.tensor(1.))
+        def forward(self, image): return image * self.weight
+    image = torch.zeros(1, 5, 1, 1); mask = torch.ones(1, 1, 1, dtype=torch.bool)
+    def loader(x): return [(x, torch.zeros_like(x), mask, mask, torch.tensor([True]))]
+    model = Model(); device = torch.device('cpu')
+    invalid = image.clone(); invalid[0, 0, 0, 0] = float('nan')
+    with pytest.raises(ValueError, match='train epoch 3, batch 1, device cpu'):
+        run_epoch(model, loader(invalid), device, 1., torch.optim.SGD(model.parameters(), .1), epoch=3)
+    with torch.no_grad(): model.weight.fill_(float('inf'))
+    with pytest.raises(FloatingPointError, match='non-finite logits.*validation epoch 2'):
+        run_epoch(model, loader(image), device, 1., epoch=2)
+    with torch.no_grad(): model.weight.fill_(1.)
+    original = trainer.phase_loss
+    monkeypatch.setattr(trainer, 'phase_loss', lambda *args: SimpleNamespace(total=model.weight * float('nan')))
+    with pytest.raises(FloatingPointError, match='non-finite loss'):
+        run_epoch(model, loader(image), device, 1.)
+    monkeypatch.setattr(trainer, 'phase_loss', original)
+    hook = model.weight.register_hook(lambda grad: grad * float('inf'))
+    with pytest.raises(FloatingPointError, match='non-finite gradients'):
+        run_epoch(model, loader(image), device, 1., torch.optim.SGD(model.parameters(), .1))
+    hook.remove()
+
+
+def test_cpu_amp_fallback_and_scaler_transition(tmp_path, monkeypatch):
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    config = Config(str(root), str(tmp_path / 'run'), epochs=1, device='cpu', amp=True)
+    fake_epochs(monkeypatch, [1.])
+    with pytest.warns(UserWarning, match='using full precision'):
+        history = train(config)
+    assert history[0]['amp_requested'] and not history[0]['amp_effective']
+    state = torch.load(tmp_path / 'run' / 'last.pt', map_location='cpu', weights_only=False)
+    state['scaler'] = {'scale': 1024.}
+    torch.save(state, tmp_path / 'run' / 'last.pt')
+    with pytest.warns(UserWarning) as captured:
+        train(config, resume=True)
+    assert any('scaler state is not active' in str(w.message) for w in captured)
+
+
+def test_scaler_restore_decisions():
+    class Scaler:
+        def __init__(self): self.loaded = None
+        def load_state_dict(self, state): self.loaded = state
+    scaler = Scaler()
+    with pytest.warns(UserWarning, match='initializing a new scaler'):
+        trainer._restore_scaler(scaler, {}, True)
+    assert scaler.loaded is None
+    saved = {'scale': 512.}
+    trainer._restore_scaler(scaler, saved, True)
+    assert scaler.loaded == saved
+    with pytest.warns(UserWarning, match='not active'):
+        trainer._restore_scaler(scaler, saved, False)
+
+
+def test_mps_amp_falls_back(tmp_path, monkeypatch):
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    monkeypatch.setattr(trainer, 'select_device', lambda requested: torch.device('mps'))
+    monkeypatch.setattr(trainer.PhaseGridUNet, 'to', lambda self, device: self)
+    fake_epochs(monkeypatch, [1.])
+    with pytest.warns(UserWarning, match='using full precision'):
+        history = train(Config(str(root), str(tmp_path / 'run'), epochs=1, device='mps', amp=True))
+    assert not history[0]['amp_effective']
+
+
+def test_failed_epoch_preserves_last_checkpoint(tmp_path, monkeypatch):
+    from dataclasses import replace
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    config = Config(str(root), str(tmp_path / 'run'), epochs=1, device='cpu')
+    fake_epochs(monkeypatch, [1.]); train(config)
+    before = (tmp_path / 'run' / 'last.pt').read_bytes()
+    def fail(*args, **kwargs): raise FloatingPointError('failed batch')
+    monkeypatch.setattr(trainer, 'run_epoch', fail)
+    with pytest.raises(FloatingPointError, match='failed batch'):
+        train(replace(config, epochs=2), resume=True)
+    assert (tmp_path / 'run' / 'last.pt').read_bytes() == before
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='requires CUDA')
+def test_cuda_amp_overflow_skips_and_recovers():
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__(); self.conv = torch.nn.Conv2d(5, 5, 1)
+        def forward(self, x): return self.conv(x)
+    device = torch.device('cuda'); model = Model().to(device)
+    optimizer = torch.optim.SGD(model.parameters(), .01)
+    scaler = torch.amp.GradScaler('cuda', init_scale=128.)
+    image = torch.ones(1, 5, 1, 1); target = torch.zeros_like(image)
+    mask = torch.ones(1, 1, 1, dtype=torch.bool)
+    batches = [(image, target, mask, mask, torch.tensor([True]))] * 2
+    calls = []
+    def overflow_once(grad):
+        calls.append(1)
+        return torch.full_like(grad, float('inf')) if len(calls) == 1 else grad
+    handle = model.conv.weight.register_hook(overflow_once)
+    result = run_epoch(model, batches, device, 1., optimizer, scaler, True, epoch=1)
+    handle.remove()
+    assert result['successful_updates'] == 1 and result['skipped_updates'] == 1
+
+    handle = model.conv.weight.register_hook(lambda grad: torch.full_like(grad, float('inf')))
+    with pytest.raises(FloatingPointError, match='no successful optimizer updates'):
+        run_epoch(model, batches, device, 1., optimizer, scaler, True, epoch=2)
+    handle.remove()
