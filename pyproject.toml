@@ -1,7 +1,7 @@
 [project]
 name = "minesweeper"
 version = "0.1.0"
-description = "Add your description here"
+description = "Minesweeper recognition and solving"
 readme = "README.md"
 authors = [
     { name = "jsnimda", email = "7615255+jsnimda@users.noreply.github.com" }

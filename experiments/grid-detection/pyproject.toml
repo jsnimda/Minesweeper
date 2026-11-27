@@ -1,7 +1,7 @@
 [project]
 name = "grid-detection"
 version = "0.1.0"
-description = "Minesweeper grid detection research"
+description = "Minesweeper grid and interface detection"
 readme = "README.md"
 authors = [
     { name = "jsnimda", email = "7615255+jsnimda@users.noreply.github.com" }

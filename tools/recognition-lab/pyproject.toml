@@ -1,6 +1,8 @@
 [project]
 name = "recognition-lab"
 version = "0.1.0"
+description = "Desktop application for inspecting Minesweeper recognition"
+readme = "README.md"
 requires-python = "==3.13.18"
 dependencies = [
   "grid-geometry", "numpy>=2.5.5", "pillow>=13.0.0", "torch==2.15.0",

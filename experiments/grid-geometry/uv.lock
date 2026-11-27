@@ -217,32 +217,36 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "pillow" },
-    { name = "synthetic-scenes" },
     { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.15.0+cu134", source = { registry = "https://download.pytorch.org/whl/cu134" }, marker = "sys_platform == 'linux'" },
+    { name = "tqdm" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "ipykernel" },
     { name = "matplotlib" },
+    { name = "pydantic" },
     { name = "pytest" },
+    { name = "synthetic-scenes" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.5.5" },
     { name = "pillow", specifier = ">=13.0.0" },
-    { name = "synthetic-scenes", editable = "../synthetic-scenes" },
     { name = "torch", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'", specifier = "==2.15.0" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==2.15.0", index = "https://download.pytorch.org/whl/cu134" },
+    { name = "tqdm", specifier = ">=4.70.1" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "ipykernel", specifier = ">=7.4.0" },
     { name = "matplotlib", specifier = ">=3.11.2" },
+    { name = "pydantic", specifier = ">=2,<3" },
     { name = "pytest", specifier = ">=9.2.0" },
+    { name = "synthetic-scenes", editable = "../synthetic-scenes" },
 ]
 
 [[package]]

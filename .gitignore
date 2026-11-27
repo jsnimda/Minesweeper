@@ -1,5 +1,8 @@
 # Python-generated files
 __pycache__/
+.pytest_cache/
+.uv-cache/
+.ipynb_checkpoints/
 *.py[oc]
 build/
 dist/
