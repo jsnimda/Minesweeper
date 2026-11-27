@@ -1,7 +1,5 @@
-"""Accepted detection statistics from compact manifest records.
-
-Older records may lack fields: missing measurements are excluded, never inferred.
-"""
+"""Accepted detection statistics from compact manifest records."""
+import math
 from synthetic_scenes.dataset_statistics import CONVENTIONS, Summary
 
 
@@ -31,16 +29,38 @@ class AcceptedStatistics:
         return summary
 
     def add(self, record):
-        split = record.get('split', 'unknown')
+        required = ('split', 'boards', 'board_count', 'scene_mode', 'native_size', 'final_size', 'augmentation_enabled')
+        missing = [key for key in required if key not in record]
+        if missing:
+            raise ValueError(f'missing required detection record fields: {missing}')
+        if record['split'] not in ('train', 'val', 'test') or record['scene_mode'] not in ('game', 'grid', 'desktop'):
+            raise ValueError('invalid detection split or scene mode')
+        boards, count = record['boards'], record['board_count']
+        if not isinstance(boards, list) or type(count) is not int or count < 0 or count != len(boards):
+            raise ValueError('invalid detection boards or board count')
+        for name in ('native_size', 'final_size'):
+            size = record[name]
+            if not isinstance(size, (list, tuple)) or len(size) != 2 or any(type(v) is not int or v <= 0 for v in size):
+                raise ValueError(f'invalid detection {name}')
+        if type(record['augmentation_enabled']) is not bool:
+            raise ValueError('invalid detection augmentation_enabled')
+        if record['augmentation_enabled'] and not isinstance(record.get('augmentation'), dict):
+            raise ValueError('enabled detection augmentation requires metadata')
+        for board in boards:
+            box = board.get('final_grid_box') if isinstance(board, dict) else None
+            if (not isinstance(box, (list, tuple)) or len(box) != 4
+                    or any(type(v) not in (int, float) or not math.isfinite(v) for v in box)
+                    or box[0] >= box[2] or box[1] >= box[3]):
+                raise ValueError('invalid detection final grid box')
+        split = record['split']
         if split not in self.splits: self.splits[split] = self._new()
         for summary in (self.overall, self.splits[split]): self._add(summary, record)
 
     @staticmethod
     def _add(summary, record):
-        boards = record.get('boards') or []
-        count = record.get('board_count')
-        if count is None and 'board_ids' in record: count = len(record['board_ids'])
-        mode = record.get('scene_mode')
+        boards = record['boards']
+        count = record['board_count']
+        mode = record['scene_mode']
         summary.totals['images'] += 1
         if count is not None:
             summary.totals['positive_images' if count else 'negative_images'] += 1
@@ -55,8 +75,7 @@ class AcceptedStatistics:
                 summary.num(name + '_width', size[0], 'dimension')
                 summary.num(name + '_height', size[1], 'dimension')
         augmentation = record.get('augmentation')
-        enabled = record.get('augmentation_enabled')
-        if enabled is None and augmentation is not None: enabled = True
+        enabled = record['augmentation_enabled']
         if enabled is not None: summary.cat('augmentation_state', 'enabled' if enabled else 'disabled')
         if augmentation is not None:
             for field in ('blur', 'resampling'):

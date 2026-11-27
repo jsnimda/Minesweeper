@@ -2,18 +2,14 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from grid_geometry.geometry import Geometry
-from grid_geometry.preprocessing import load_rgb_image, preprocess_image, transform_geometry
+from grid_geometry.preprocessing import preprocess_image
 
 
-def test_rgb_resize_preserves_aspect_and_centers_padding(tmp_path):
-    path = tmp_path / "grayscale.png"
-    Image.new("L", (101, 49), 180).save(path)
-
-    image = load_rgb_image(path)
+def test_rgb_resize_preserves_aspect_and_centers_padding():
+    image = Image.new("L", (101, 49), 180)
     canvas, transform = preprocess_image(image, (80, 64))
 
-    assert image.mode == canvas.mode == "RGB"
+    assert canvas.mode == "RGB"
     assert transform.source_size == (101, 49)
     assert transform.resized_size == (80, 39)
     assert transform.offset == (0, 12)
@@ -40,29 +36,16 @@ def test_tall_source_is_centered_on_a_wide_canvas():
     assert canvas.getpixel((62, 63)) == (0, 0, 0)
 
 
-def test_geometry_resizes_and_round_trips_fractional_points_and_boxes(annotation):
-    source = Geometry(**{
-        key: annotation[key]
-        for key in ("size", "rows", "columns", "grid_box", "x_edges", "y_edges", "cell_boxes", "centers")
-    })
-    _, transform = preprocess_image(Image.new("RGB", source.size), (80, 72))
-    transformed = transform_geometry(source, transform)
-
+def test_fractional_points_and_boxes_round_trip():
+    _, transform = preprocess_image(Image.new("RGB", (31, 19)), (80, 72))
     assert transform.resized_size == (80, 49)
     assert transform.offset == (0, 11)
-    assert transformed.size == (80, 72)
-    assert transformed.rows == source.rows
-    assert transformed.columns == source.columns
-    np.testing.assert_allclose(
-        transformed.centers[0, 0],
-        (5.75 * 80 / 31, 11 + 4.5 * 49 / 19),
-    )
-    for field in ("grid_box", "cell_boxes", "centers"):
-        np.testing.assert_allclose(transform.to_source(getattr(transformed, field)), getattr(source, field))
-    np.testing.assert_allclose(transformed.x_edges, source.x_edges * 80 / 31)
-    np.testing.assert_allclose(transformed.y_edges, source.y_edges * 49 / 19 + 11)
-    assert transformed.cell_boxes[0, 0, 2] < transformed.x_edges[1]
-    assert transformed.x_edges[1] < transformed.cell_boxes[0, 1, 0]
+    point = [5.75, 4.5]
+    box = [1.25, 2.5, 15.75, 10.25]
+    np.testing.assert_allclose(transform.to_canvas(point), (5.75 * 80 / 31, 11 + 4.5 * 49 / 19))
+    np.testing.assert_allclose(transform.to_canvas(box), (1.25 * 80 / 31, 11 + 2.5 * 49 / 19, 15.75 * 80 / 31, 11 + 10.25 * 49 / 19))
+    for coordinates in (point, box):
+        np.testing.assert_allclose(transform.to_source(transform.to_canvas(coordinates)), coordinates)
 
 
 @pytest.mark.parametrize("size", [(0, 32), (-8, 32), (8, 9), (32.0, 32), (32, float("inf")), (True, 8)])

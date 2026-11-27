@@ -1,4 +1,6 @@
 """Accepted geometry statistics from existing and extended sample metadata."""
+import math
+
 from synthetic_scenes.dataset_statistics import CONVENTIONS, Summary
 
 NEUTRAL_TOLERANCE = 1e-9
@@ -35,7 +37,71 @@ class AcceptedStatistics:
         return result
 
     def add(self, record):
-        split = record.get('split', 'unknown')
+        required = ('sample_id', 'split', 'board_id', 'scene_mode', 'source_size', 'final_size',
+                    'geometry', 'transform', 'padding_type', 'padding_side', 'padding_extent',
+                    'padding_fraction', 'augmentation')
+        missing = [key for key in required if key not in record]
+        if missing:
+            raise ValueError(f'missing required geometry record fields: {missing}')
+        if not isinstance(record['sample_id'], str) or not record['sample_id']:
+            raise ValueError('invalid geometry sample identity')
+        if record['split'] not in ('train', 'val', 'test') or record['scene_mode'] not in ('game', 'desktop'):
+            raise ValueError('invalid geometry split or scene mode')
+        for name in ('source_size', 'final_size'):
+            size = record[name]
+            if not isinstance(size, (tuple, list)) or len(size) != 2 or any(type(v) is not int or v <= 0 for v in size):
+                raise ValueError(f'invalid geometry {name}')
+        transform = record['transform']
+        if not isinstance(transform, dict) or any(type(transform.get(k)) not in (int, float) or not math.isfinite(transform[k]) or transform[k] <= 0 for k in ('scale_x', 'scale_y')):
+            raise ValueError('invalid geometry transform')
+        augmentation = record['augmentation']
+        if not isinstance(augmentation, dict) or any(k not in augmentation for k in ('resampling', 'blur', 'brightness', 'contrast')):
+            raise ValueError('invalid geometry augmentation metadata')
+        if (type(record['padding_extent']) is not int or record['padding_extent'] < 0
+                or type(record['padding_fraction']) not in (int, float)
+                or not math.isfinite(record['padding_fraction']) or not 0 <= record['padding_fraction'] <= 1):
+            raise ValueError('invalid geometry padding observation')
+        if record['padding_type'] is not None and record['padding_side'] not in ('left', 'right', 'top', 'bottom'):
+            raise ValueError('invalid geometry padding side')
+        board_id = record['board_id']
+        if board_id is not None:
+            if not isinstance(board_id, str) or not board_id:
+                raise ValueError('invalid geometry board identity')
+            fields = ('board_dimensions', 'game_specification', 'appearance', 'original_geometry',
+                      'sampled_cell_size', 'requested_cell_size', 'resolved_cell_size',
+                      'requested_zoom', 'requested_display_scale', 'requested_effective_scale', 'style', 'theme',
+                      'requested_pitch', 'effective_pitch_x', 'effective_pitch_y', 'anisotropy_ratio')
+            if any(record.get(k) is None for k in fields):
+                raise ValueError('missing positive geometry board metadata')
+            dimensions = record['board_dimensions']
+            if not isinstance(dimensions, (tuple, list)) or len(dimensions) != 2 or any(type(v) is not int or v <= 0 for v in dimensions):
+                raise ValueError('invalid positive geometry board dimensions')
+            for name, keys in (('game_specification', ('mine_count', 'status')), ('appearance', ('cell_width', 'cell_height')),
+                               ('original_geometry', ('pitch_x', 'pitch_y')), ('geometry', ('visible_box',))):
+                value = record.get(name)
+                if not isinstance(value, dict) or any(value.get(k) is None for k in keys):
+                    raise ValueError(f'invalid positive geometry {name}')
+            for name in ('geometry', 'original_geometry'):
+                value = record[name]
+                for key in ('origin_x', 'origin_y', 'pitch_x', 'pitch_y'):
+                    item = value.get(key)
+                    if (type(item) not in (int, float) or not math.isfinite(item)
+                            or (key.startswith('pitch_') and item <= 0)):
+                        raise ValueError(f'invalid positive geometry {name} {key}')
+            for key in ('sampled_cell_size', 'requested_cell_size', 'resolved_cell_size',
+                        'requested_zoom', 'requested_display_scale', 'requested_effective_scale',
+                        'requested_pitch', 'effective_pitch_x', 'effective_pitch_y', 'anisotropy_ratio'):
+                value = record[key]
+                if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                    raise ValueError(f'invalid positive geometry {key}')
+            box = record['geometry']['visible_box']
+            if (not isinstance(box, (tuple, list)) or len(box) != 4
+                    or any(type(v) not in (int, float) or not math.isfinite(v) for v in box)
+                    or box[0] >= box[2] or box[1] >= box[3]):
+                raise ValueError('invalid positive geometry visible box')
+        elif record['geometry'] is not None:
+            raise ValueError('negative geometry record contains board geometry')
+        split = record['split']
         if split not in self.splits: self.splits[split] = self._new()
         for summary in (self.overall, self.splits[split]):
             self._add(summary, record, self.standalone_source_budget)
@@ -43,10 +109,9 @@ class AcceptedStatistics:
     @staticmethod
     def _add(summary, record, budget):
         summary.totals['images'] += 1
-        board_id = record.get('board_id')
-        if 'board_id' in record:
-            summary.totals['positive_images' if board_id else 'negative_images'] += 1
-        mode = record.get('scene_mode')
+        board_id = record['board_id']
+        summary.totals['positive_images' if board_id else 'negative_images'] += 1
+        mode = record['scene_mode']
         if mode == 'game': summary.totals['standalone_images'] += 1
         summary.cat('source_mode', mode)
         summary.cat('category', record.get('category'))
@@ -54,7 +119,7 @@ class AcceptedStatistics:
             summary.cat('requested_positive_category', record.get('requested_category'))
             summary.cat('realized_positive_category', record.get('category'))
             summary.cat('requested_pitch_bin', record.get('requested_pitch_bin'))
-        source_size = record.get('source_size')
+        source_size = record['source_size']
         if source_size:
             summary.num('source_width', source_size[0], 'dimension')
             summary.num('source_height', source_size[1], 'dimension')
@@ -71,17 +136,17 @@ class AcceptedStatistics:
         summary.cat('context_type', record.get('context_type'))
         summary.cat('fill_procedural_subtype', record.get('context_subtype'))
         if board_id:
-            game = record.get('game_specification') or {}
-            dimensions = record.get('board_dimensions') or (None, None)
-            appearance = record.get('appearance') or {}
-            original = record.get('original_geometry') or {}
+            game = record['game_specification']
+            dimensions = record['board_dimensions']
+            appearance = record['appearance']
+            original = record['original_geometry']
             board = {key: record.get(key) for key in ('sampled_cell_size', 'requested_cell_size', 'resolved_cell_size',
                        'requested_zoom', 'requested_display_scale', 'requested_effective_scale', 'style', 'theme')}
             board.update(rows=dimensions[0], columns=dimensions[1], mine_count=game.get('mine_count'),
                          status=game.get('status'), pitch_x=original.get('pitch_x'), pitch_y=original.get('pitch_y'),
                          cell_width=appearance.get('cell_width'), cell_height=appearance.get('cell_height'))
             summary.board(board, mode)
-            geometry, final_size = record.get('geometry'), record.get('final_size')
+            geometry, final_size = record['geometry'], record['final_size']
             if geometry and final_size:
                 left, top, right, bottom = geometry['visible_box']
                 width, height = final_size
@@ -96,15 +161,15 @@ class AcceptedStatistics:
             if desired is not None and x is not None: summary.num('pitch_error_x', abs(x-desired), 'error')
             if desired is not None and y is not None and aspect is not None:
                 summary.num('pitch_error_y', abs(y-desired*aspect), 'error')
-        transform = record.get('transform') or {}
+        transform = record['transform']
         for axis in ('x', 'y'):
             value = transform.get('scale_' + axis)
             summary.num('resampling_scale_' + axis, value, 'scale')
             if value is not None:
                 state = 'neutral' if abs(value-1.) <= NEUTRAL_TOLERANCE else 'upsampling' if value > 1 else 'downsampling'
                 summary.cat('resampling_' + axis, state)
-        padding = record.get('padding_type')
-        if 'padding_type' in record: summary.totals['padding_observations'] += 1
+        padding = record['padding_type']
+        summary.totals['padding_observations'] += 1
         if padding is not None:
             summary.totals['padded_images'] += 1
             summary.cat('padding_side', record.get('padding_side'))
@@ -112,12 +177,12 @@ class AcceptedStatistics:
             summary.num('padding_extent', extent, 'dimension')
             if extent is not None and size and side:
                 summary.num('padding_extent_fraction', extent/size[0 if side in ('left', 'right') else 1], 'fraction')
-        fraction = record.get('padding_fraction')
+        fraction = record['padding_fraction']
         summary.num('padding_fraction', fraction, 'fraction')
         if fraction is not None: summary.num('known_fraction', 1-fraction, 'fraction')
         for name in ('grid_coverage_fraction', 'phase_supervision_fraction', 'grid_occupancy_fraction'):
             summary.num(name, record.get(name), 'fraction')
-        augmentation = record.get('augmentation') or {}
+        augmentation = record['augmentation']
         for name in ('resampling', 'blur'): summary.cat('augmentation_' + name, augmentation.get(name))
         for name in ('brightness', 'contrast'): summary.num('augmentation_' + name, augmentation.get(name), 'photometric')
 

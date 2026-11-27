@@ -14,7 +14,7 @@ def test_geometry_pitch_context_padding_and_resampling():
     fill = {'screen': {'width': 384, 'height': 384, 'scale': 1.},
             'appearance': {'shell': 'dock', 'style': 'classic', 'color_scheme': 'dark', 'show_dock': False,
                            'show_status_bar': False}, 'applications': ['sudoku']}
-    stats.add({'split': 'train', 'board_id': 'a', 'scene_mode': 'desktop', 'source_desktop': source,
+    stats.add({'sample_id': 'a', 'split': 'train', 'board_id': 'a', 'scene_mode': 'desktop', 'source_desktop': source,
         'fill_desktop': fill, 'source_size': [1600, 1000], 'final_size': [384, 384],
         'requested_category': 'side', 'category': 'side', 'requested_pitch_bin': '20-31',
         'requested_pitch': 24., 'effective_pitch_x': 24., 'effective_pitch_y': 25.2,
@@ -22,14 +22,17 @@ def test_geometry_pitch_context_padding_and_resampling():
         'board_dimensions': [30, 20], 'game_specification': {'mine_count': 80, 'status': 'active'},
         'sampled_cell_size': 32, 'requested_cell_size': 32, 'resolved_cell_size': 24,
         'requested_zoom': 1.25, 'requested_display_scale': 1.5, 'requested_effective_scale': 1.875,
-        'original_geometry': {'pitch_x': 50, 'pitch_y': 50}, 'transform': {'scale_x': .48, 'scale_y': 1.},
+        'style': 'classic', 'theme': 'default', 'appearance': {'cell_width': 50, 'cell_height': 50},
+        'geometry': {'origin_x': 0, 'origin_y': 0, 'pitch_x': 24., 'pitch_y': 25.2, 'visible_box': [0, 0, 384, 384]},
+        'original_geometry': {'origin_x': 0, 'origin_y': 0, 'pitch_x': 50, 'pitch_y': 50}, 'transform': {'scale_x': .48, 'scale_y': 1.},
         'background_visible': True, 'context_type': 'desktop', 'padding_type': 'black',
         'padding_side': 'left', 'padding_extent': 38, 'padding_fraction': 38/384,
         'grid_coverage_fraction': .5, 'phase_supervision_fraction': .5, 'grid_occupancy_fraction': .51,
         'augmentation': {'resampling': 'BILINEAR', 'blur': .25, 'brightness': 1., 'contrast': 1.}})
-    stats.add({'split': 'val', 'board_id': None, 'scene_mode': 'desktop', 'source_desktop': source,
-        'source_size': [1600, 1000], 'category': 'hard_negative', 'background_visible': False,
-        'context_type': 'source_desktop', 'padding_type': None, 'padding_fraction': 0.,
+    stats.add({'sample_id': 'b', 'split': 'val', 'board_id': None, 'scene_mode': 'desktop', 'source_desktop': source,
+        'source_size': [1600, 1000], 'final_size': [384, 384], 'geometry': None, 'category': 'hard_negative', 'background_visible': False,
+        'context_type': 'source_desktop', 'padding_type': None, 'padding_side': None, 'padding_extent': 0, 'padding_fraction': 0.,
+        'augmentation': {'resampling': 'BILINEAR', 'blur': 0., 'brightness': 1., 'contrast': 1.},
         'transform': {'scale_x': 2., 'scale_y': 1.}})
     result = stats.result({'train': 1, 'val': 1, 'test': 0})
     overall = result['overall']; totals = overall['totals']
@@ -45,6 +48,30 @@ def test_geometry_pitch_context_padding_and_resampling():
     assert overall['categorical']['resampling_y']['counts'] == {'neutral': 2}
     assert overall['categorical']['generated_fill']['counts'] == {'desktop': 1, 'none': 1}
     assert result['splits']['test']['numerical']['desired_pitch']['count'] == 0
+
+
+@pytest.mark.parametrize('field', ['sample_id', 'split', 'board_id', 'scene_mode', 'source_size', 'final_size',
+                                    'geometry', 'transform', 'padding_type', 'padding_side', 'padding_extent',
+                                    'padding_fraction', 'augmentation'])
+def test_missing_required_record_field(field):
+    record = {'sample_id': 'a', 'split': 'train', 'board_id': None, 'scene_mode': 'game',
+              'source_size': [32, 32], 'final_size': [32, 32], 'geometry': None,
+              'transform': {'scale_x': 1., 'scale_y': 1.}, 'padding_type': None,
+              'padding_side': None, 'padding_extent': 0, 'padding_fraction': 0.,
+              'augmentation': {'resampling': 'BILINEAR', 'blur': 0., 'brightness': 1., 'contrast': 1.}}
+    del record[field]
+    with pytest.raises(ValueError, match='missing required geometry record fields'):
+        AcceptedStatistics().add(record)
+
+
+def test_positive_requires_board_metadata():
+    record = {'sample_id': 'a', 'split': 'train', 'board_id': 'board', 'scene_mode': 'game',
+              'source_size': [32, 32], 'final_size': [32, 32], 'geometry': {},
+              'transform': {'scale_x': 1., 'scale_y': 1.}, 'padding_type': None,
+              'padding_side': None, 'padding_extent': 0, 'padding_fraction': 0.,
+              'augmentation': {'resampling': 'BILINEAR', 'blur': 0., 'brightness': 1., 'contrast': 1.}}
+    with pytest.raises(ValueError, match='positive geometry board metadata'):
+        AcceptedStatistics().add(record)
 
 
 def test_statistics_failure_keeps_incomplete(monkeypatch, tmp_path):

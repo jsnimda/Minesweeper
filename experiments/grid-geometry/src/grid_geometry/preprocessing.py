@@ -1,13 +1,12 @@
 """Deterministic resize and padding with invertible coordinate transforms."""
 
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 from numpy.typing import ArrayLike
 from PIL import Image
 
-from .geometry import FloatArray, Geometry, Size, coordinate_array, validate_size
+from .geometry import FloatArray, Size, coordinate_array, validate_size
 
 
 DEFAULT_CANVAS_SIZE = (384, 384)
@@ -18,12 +17,6 @@ def validate_canvas_size(size: object) -> Size:
     if width % 8 or height % 8:
         raise ValueError("canvas width and height must be divisible by eight")
     return width, height
-
-
-def load_rgb_image(path: str | Path) -> Image.Image:
-    """Read an exported geometry PNG and return a detached RGB image."""
-    with Image.open(path, formats=["PNG"]) as image:
-        return image.convert("RGB")
 
 
 @dataclass(frozen=True)
@@ -87,20 +80,3 @@ def preprocess_image(
     canvas = Image.new("RGB", transform.canvas_size)
     canvas.paste(resized, offset)
     return canvas, transform
-
-
-def transform_geometry(geometry: Geometry, transform: ImageTransform) -> Geometry:
-    """Apply the same resize and padding to all crop-local annotations."""
-    if geometry.size != transform.source_size:
-        raise ValueError("geometry size does not match the transform's source image")
-    left, top = transform.offset
-    return Geometry(
-        size=transform.canvas_size,
-        rows=geometry.rows,
-        columns=geometry.columns,
-        grid_box=transform.to_canvas(geometry.grid_box),
-        x_edges=geometry.x_edges * transform.scale_x + left,
-        y_edges=geometry.y_edges * transform.scale_y + top,
-        cell_boxes=transform.to_canvas(geometry.cell_boxes),
-        centers=transform.to_canvas(geometry.centers),
-    )
