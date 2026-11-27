@@ -99,7 +99,7 @@ def global_record(metadata, fields):
     y0, y1 = max(0, y0), min(height, y1)
     values = fields[:, y0:y1, x0:x1]
     if min(values.shape[1:]) < 2:
-        return {'accepted': False, 'reasons': ['known region too small'], 'correct': None}
+        return {'accepted': False, 'local_accepted': False, 'reasons': ['known region too small'], 'correct': None}
     decoded = decode_phase(values)
     h = decoded.hypotheses[0] if decoded.hypotheses else None
     local = validate_phase(values, h, decoder_status=decoded.status) if h else None

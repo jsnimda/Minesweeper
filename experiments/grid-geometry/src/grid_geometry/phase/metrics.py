@@ -10,7 +10,7 @@ from .model import phase_predictions
 class TargetMetrics:
     def __init__(self, occupancy_weight=1.0):
         self.weight = occupancy_weight
-        self.groups = {name: dict(samples=0, phase_n=0, occ_n=0, x=0., y=0., bce=0., angle_x=0., angle_y=0., angle_n_x=0, angle_n_y=0, mag_x=0., mag_y=0., tp=0, fp=0, fn=0) for name in ('all', 'positive', 'negative')}
+        self.groups = {name: dict(samples=0, phase_n=0, occ_n=0, x=0., y=0., bce=0., angle_x=0., angle_y=0., angle_n_x=0, angle_n_y=0, mag_x=0., mag_y=0., tp=0, fp=0, fn=0, tn=0) for name in ('all', 'positive', 'negative')}
 
     def update(self, logits, targets, phase_mask, occupancy_mask, positive):
         logits, targets = logits.detach().float(), targets.detach().float()
@@ -33,7 +33,7 @@ class TargetMetrics:
                 d['mag_'+axis] += float((torch.linalg.vector_norm(a, dim=1) * pm).sum())
             d['bce'] += float((F.binary_cross_entropy_with_logits(raw[:, 4], target[:, 4], reduction='none') * om).sum())
             pred_pos, true_pos = pred[:, 4] >= .5, target[:, 4] >= .5
-            d['tp'] += int((pred_pos & true_pos & om).sum()); d['fp'] += int((pred_pos & ~true_pos & om).sum()); d['fn'] += int((~pred_pos & true_pos & om).sum())
+            d['tp'] += int((pred_pos & true_pos & om).sum()); d['fp'] += int((pred_pos & ~true_pos & om).sum()); d['fn'] += int((~pred_pos & true_pos & om).sum()); d['tn'] += int((~pred_pos & ~true_pos & om).sum())
 
     def compute(self):
         def div(a, b):
@@ -50,5 +50,6 @@ class TargetMetrics:
                 'angle_pixels_x': d['angle_n_x'], 'angle_pixels_y': d['angle_n_y'],
                 'magnitude_x': div(d['mag_x'], pn), 'magnitude_y': div(d['mag_y'], pn),
                 'precision': div(d['tp'], d['tp']+d['fp']), 'recall': div(d['tp'], d['tp']+d['fn']),
-                'iou': div(d['tp'], d['tp']+d['fp']+d['fn'])}
+                'iou': div(d['tp'], d['tp']+d['fp']+d['fn']),
+                'occupancy_confusion': {key: d[key] for key in ('tp', 'fp', 'fn', 'tn')}}
         return result
