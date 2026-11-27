@@ -1,5 +1,5 @@
 # Paths are relative to this config file.
-dataset_root = "../data/phase"
+dataset_root = "../datasets/phase"
 output_dir = "../runs/phase-baseline"
 batch_size = 8
 workers = 0

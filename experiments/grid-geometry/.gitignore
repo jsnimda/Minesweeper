@@ -1,19 +1,14 @@
-.venv/
+# Local caches and notebook checkpoints
 .uv-cache/
 .pytest_cache/
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
 .ipynb_checkpoints/
-.DS_Store
+*.pyd
 
-/data/
+# Generated datasets, diagnostics and model artifacts
 /datasets/
+/runs/
 /checkpoints/
 /outputs/
-/runs/
 *.ckpt
 *.pt
 *.pth

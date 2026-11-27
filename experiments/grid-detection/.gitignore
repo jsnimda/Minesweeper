@@ -1,2 +1,3 @@
-# Downloaded and generated experiment data
-/data/
+# Generated datasets and training artifacts
+/datasets/
+/runs/
