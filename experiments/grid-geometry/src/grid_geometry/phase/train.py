@@ -49,6 +49,8 @@ class Config:
     scheduler: str = 'none'
     step_size: int = 10
     gamma: float = 0.5
+    cosine_t_max: int = 50
+    cosine_eta_min: float = 1e-5
     seed: int = 42
     device: str = 'auto'
     amp: bool = False
@@ -57,12 +59,14 @@ class Config:
     patience: int | None = None
 
     def __post_init__(self):
-        if any(type(v) is not int or v < low for v, low in ((self.batch_size, 1), (self.workers, 0), (self.epochs, 1), (self.step_size, 1), (self.seed, 0))) or self.seed >= 2**32:
+        if any(type(v) is not int or v < low for v, low in ((self.batch_size, 1), (self.workers, 0), (self.epochs, 1), (self.step_size, 1), (self.cosine_t_max, 1), (self.seed, 0))) or self.seed >= 2**32:
             raise ValueError('invalid integer training setting')
-        if self.optimizer not in ('adam', 'adamw') or self.scheduler not in ('none', 'step') or self.device not in ('auto', 'cpu', 'cuda', 'mps'):
+        if self.optimizer not in ('adam', 'adamw') or self.scheduler not in ('none', 'step', 'cosine') or self.device not in ('auto', 'cpu', 'cuda', 'mps'):
             raise ValueError('invalid optimizer, scheduler or device')
         if any(not math.isfinite(v) for v in (self.learning_rate, self.weight_decay, self.gamma, self.occupancy_weight)) or self.learning_rate <= 0 or self.weight_decay < 0 or not 0 < self.gamma <= 1 or self.occupancy_weight < 0:
             raise ValueError('invalid numeric training setting')
+        if not math.isfinite(self.cosine_eta_min) or self.cosine_eta_min < 0 or (self.scheduler == 'cosine' and self.cosine_eta_min > self.learning_rate):
+            raise ValueError('invalid cosine minimum learning rate')
         if type(self.amp) is not bool or self.selection_metric not in ('loss', 'occupancy_loss', 'phase_loss'):
             raise ValueError('invalid amp or selection metric')
         if self.patience is not None and (type(self.patience) is not int or self.patience < 1):
@@ -304,13 +308,19 @@ def train(config, resume=False):
     random.seed(config.seed); np.random.seed(config.seed); torch.manual_seed(config.seed)
     model = PhaseGridUNet().to(device)
     opt = (torch.optim.Adam if config.optimizer == 'adam' else torch.optim.AdamW)(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    scheduler = torch.optim.lr_scheduler.StepLR(opt, config.step_size, gamma=config.gamma) if config.scheduler == 'step' else None
+    if config.scheduler == 'step':
+        scheduler = torch.optim.lr_scheduler.StepLR(opt, config.step_size, gamma=config.gamma)
+    elif config.scheduler == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=config.cosine_t_max, eta_min=config.cosine_eta_min)
+    else:
+        scheduler = None
     scaler = torch.amp.GradScaler('cuda', enabled=effective_amp)
     print(f'Dataset: {root}\nOutput: {out}', flush=True)
     print(f'Samples: train {len(datasets[0])}, validation {len(datasets[1])}; input {datasets[0].dataset.size}; parameters {sum(p.numel() for p in model.parameters()):,}\n'
           f'Device: requested {config.device}, resolved {device}; AMP: requested {config.amp}, effective {effective_amp}\n'
           f'Batch size {config.batch_size}, workers {config.workers}, epochs {config.epochs}; optimizer {config.optimizer}, lr {config.learning_rate:g}, weight decay {config.weight_decay:g}, scheduler {config.scheduler}'
-          + (f' (step size {config.step_size}, gamma {config.gamma:g})' if scheduler else '')
+          + (f' (step size {config.step_size}, gamma {config.gamma:g})' if config.scheduler == 'step' else
+             f' (T_max {config.cosine_t_max}, eta_min {config.cosine_eta_min:g})' if config.scheduler == 'cosine' else '')
           + f'; selection {config.selection_metric}, patience {config.patience}', flush=True)
     history, best, best_epoch, counter, start_epoch = [], float('inf'), None, 0, 0
     if resume:
@@ -319,6 +329,9 @@ def train(config, resume=False):
         if type(version) is not int or version != CHECKPOINT_VERSION:
             raise ValueError(f'unsupported phase checkpoint version: {version}')
         old = dict(ckpt['config']); new = asdict(config)
+        if old.get('scheduler') in ('none', 'step'):
+            old.setdefault('cosine_t_max', 50)
+            old.setdefault('cosine_eta_min', 1e-5)
         for key in new.keys() - {'epochs', 'device', 'output_dir'}:
             if key not in old or old[key] != new[key]:
                 raise ValueError(f'resume configuration differs: {key}')
@@ -361,7 +374,8 @@ def train(config, resume=False):
             counter += 1
         stopped = config.patience is not None and counter >= config.patience
         reason = 'early_stopping' if stopped else ('epoch_limit' if epoch+1 == config.epochs else None)
-        if scheduler: scheduler.step()
+        if scheduler and (config.scheduler != 'cosine' or scheduler.last_epoch < config.cosine_t_max):
+            scheduler.step()
         epoch_seconds = time.perf_counter() - epoch_start
         previous = [row.get('performance', {}).get('epoch_seconds') for row in history]
         elapsed = sum(previous) + epoch_seconds if all(v is not None for v in previous) else None
