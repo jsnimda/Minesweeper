@@ -25,7 +25,7 @@ import warnings
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 from ..dataset.loader import PhaseDataset
 from .loss import phase_loss

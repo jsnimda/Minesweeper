@@ -9,10 +9,11 @@ from .validation import validate_phase
 
 def plot_history(history):
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator
     fig, ax = plt.subplots()
     for split in ('train', 'validation'):
-        ax.plot([h['epoch'] for h in history], [h[split]['metrics']['all']['loss'] for h in history], label=split)
-    ax.set(xlabel='Epoch', ylabel='Loss'); ax.legend()
+        ax.plot([h['epoch'] for h in history], [h[split]['metrics']['all']['loss'] for h in history], marker='o', markersize=3, label=split)
+    ax.set(xlabel='Epoch', ylabel='Loss'); ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=8)); ax.legend()
     return fig
 
 

@@ -1,3 +1,4 @@
 # Generated datasets and training artifacts
 /datasets/
 /runs/
+/weights/
