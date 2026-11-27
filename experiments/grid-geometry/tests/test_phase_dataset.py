@@ -14,7 +14,7 @@ from grid_geometry.dataset.targets import PhaseGeometry
 
 
 def _write_dataset(root):
-    config = {'status': 'complete', 'input_size': [32, 32], 'transition_ratio': .25,
+    config = {'status': 'complete', 'generator': 'phase-grid-v1', 'generator_revision': 1, 'input_size': [32, 32], 'transition_ratio': .25,
               'train': 2, 'val': 0, 'test': 0}
     root.mkdir()
     (root / 'config.json').write_text(json.dumps(config))

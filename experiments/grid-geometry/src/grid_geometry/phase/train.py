@@ -163,7 +163,7 @@ def run_epoch(model, loader, device, weight, optimizer=None, scaler=None, amp=Fa
 
 
 def _history_stopping_state(history, metric):
-    """Recover only values supported by a complete, ordered legacy history."""
+    """Validate stopping state against a complete, ordered history."""
     best, best_epoch, counter = float('inf'), None, 0
     for expected, row in enumerate(history, 1):
         if row.get('epoch') != expected:
@@ -315,12 +315,10 @@ def train(config, resume=False):
     history, best, best_epoch, counter, start_epoch = [], float('inf'), None, 0, 0
     if resume:
         ckpt = torch.load(last, map_location='cpu', weights_only=False)
-        version = ckpt.get('checkpoint_version', 0)
-        if type(version) is not int or version not in (0, CHECKPOINT_VERSION):
+        version = ckpt.get('checkpoint_version')
+        if type(version) is not int or version != CHECKPOINT_VERSION:
             raise ValueError(f'unsupported phase checkpoint version: {version}')
         old = dict(ckpt['config']); new = asdict(config)
-        if version == 0:
-            old.setdefault('patience', None)
         for key in new.keys() - {'epochs', 'device', 'output_dir'}:
             if key not in old or old[key] != new[key]:
                 raise ValueError(f'resume configuration differs: {key}')
@@ -332,13 +330,11 @@ def train(config, resume=False):
         recovered_best, recovered_epoch, recovered_counter = _history_stopping_state(history, config.selection_metric)
         if len(history) != start_epoch or recovered_best != best or recovered_epoch is None:
             raise ValueError('checkpoint history and best metric are inconsistent')
-        best_epoch = ckpt.get('best_epoch', recovered_epoch)
-        counter = ckpt.get('epochs_without_improvement', recovered_counter)
+        best_epoch = ckpt['best_epoch']
+        counter = ckpt['epochs_without_improvement']
         if best_epoch != recovered_epoch or counter != recovered_counter:
             raise ValueError('checkpoint early-stopping state is inconsistent with history')
         recovered_state = dict(ckpt, best_epoch=best_epoch, epochs_without_improvement=counter)
-        if 'stopping_reason' not in recovered_state:
-            recovered_state['stopping_reason'] = history[-1].get('stopping_reason')
         _recover_sidecars(out, recovered_state, best_epoch)
         _restore_scaler(scaler, ckpt.get('scaler'), effective_amp)
         random.setstate(ckpt['python_rng']); np.random.set_state(ckpt['numpy_rng']); torch.set_rng_state(ckpt['torch_rng'].cpu())

@@ -16,7 +16,7 @@ import grid_geometry.phase.train as trainer
 
 
 def dataset(root):
-    (root / 'config.json').write_text(json.dumps({'status':'complete','generator':'phase-grid-v1','input_size':[32,32], 'transition_ratio':.25}))
+    (root / 'config.json').write_text(json.dumps({'status':'complete','generator':'phase-grid-v1','generator_revision':1,'input_size':[32,32], 'transition_ratio':.25}))
     (root / 'manifest.jsonl').write_text('')
     for split in ('train','val','test'):
         folder = root / split; folder.mkdir()
@@ -143,17 +143,22 @@ def test_epoch_extension_resume_counter_and_learning_rate(tmp_path, monkeypatch,
     assert history[-1]['learning_rate'] == pytest.approx(.00025)
 
 
-def test_legacy_resume_and_sidecar_recovery(tmp_path, monkeypatch):
+def test_unsupported_resume_version_and_sidecar_recovery(tmp_path, monkeypatch):
     from dataclasses import replace
     root = tmp_path / 'data'; root.mkdir(); dataset(root)
     out = tmp_path / 'run'
     config = Config(str(root), str(out), epochs=1, device='cpu')
-    fake_epochs(monkeypatch, [1.])
-    train(config)
+    fake_epochs(monkeypatch, [1.]); train(config)
     state = torch.load(out / 'last.pt', map_location='cpu', weights_only=False)
-    for key in ('checkpoint_version', 'best_epoch', 'epochs_without_improvement', 'stopping_reason', 'amp_requested', 'amp_effective'):
-        state.pop(key)
-    state['config'].pop('patience')
+    for version in (None, 0, 2):
+        invalid = dict(state)
+        if version is None:
+            invalid.pop('checkpoint_version')
+        else:
+            invalid['checkpoint_version'] = version
+        torch.save(invalid, out / 'last.pt')
+        with pytest.raises(ValueError, match='unsupported phase checkpoint version'):
+            train(replace(config, epochs=2), resume=True)
     torch.save(state, out / 'last.pt')
     (out / 'best.pt').unlink(); (out / 'history.json').unlink()
     fake_epochs(monkeypatch, [2.])

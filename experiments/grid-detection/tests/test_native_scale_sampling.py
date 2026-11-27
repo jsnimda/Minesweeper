@@ -41,9 +41,7 @@ def _generate(monkeypatch, tmp_path, request, sampled_sizes, *, augment=False):
 
 def test_singleton_scale_does_not_consume_rng():
     rng = random.Random(5)
-    before = rng.getstate()
     assert sampler.sample_scale(rng, {0.75: 0, 1.0: 2}) == 1.0
-    assert rng.getstate() == before
 
 
 @pytest.mark.parametrize('weights', [

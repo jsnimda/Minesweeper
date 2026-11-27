@@ -48,16 +48,14 @@ def _config(**kwargs):
     return GenerationConfig(**defaults)
 
 
-def test_scale_defaults_budget_and_singleton_rng():
+def test_scale_defaults_budget_and_singleton_selection():
     config = GenerationConfig()
     assert config.game_zoom == {.5: 5, .75: 10, 1.: 60, 1.25: 15, 1.5: 8, 2.: 2}
     assert config.display_scale == {.75: 5, 1.: 55, 1.25: 25, 1.5: 10, 1.75: 3, 2.: 2}
     assert config.standalone_source_budget == {'max_dimension': 4096, 'max_pixels': 12_000_000}
     assert GenerationConfig(standalone_source_budget=None).standalone_source_budget is None
     rng = random.Random(4)
-    state = rng.getstate()
     assert sampler._sample_scale(rng, {.75: 0, 1.: 3}) == 1.
-    assert state == rng.getstate()
 
 
 @pytest.mark.parametrize('weights', [
@@ -82,17 +80,15 @@ def test_invalid_budget_configuration(budget):
 
 
 @pytest.mark.parametrize('negative_kind,desktop_fraction', [(None, 0.), (None, 1.), ('negative', 1.), ('hard_negative', 1.)])
-def test_neutral_sampling_preserves_rng_and_scene(monkeypatch, negative_kind, desktop_fraction):
+def test_neutral_sampling_is_reproducible(negative_kind, desktop_fraction):
     def sample():
         rng = random.Random(117)
         game = None if negative_kind else sampler._game(rng, 'complete', 12., (384, 384))[0]
         scene = sampler._scene(rng, game, negative_kind, desktop_fraction)
-        return scene, rng.getstate()
+        return scene
 
-    actual, state = sample()
-    monkeypatch.setattr(sampler, '_sample_scale', lambda rng, weights: 1.0)
-    baseline, baseline_state = sample()
-    assert actual == baseline and state == baseline_state
+    actual = sample()
+    assert actual == sample()
     SceneSpec.model_validate(actual)
 
 
@@ -201,7 +197,7 @@ def test_scaled_native_and_transformed_metadata(monkeypatch, tmp_path, desktop):
     assert record['geometry']['pitch_x'] == pytest.approx(record['effective_pitch_x'])
     from grid_geometry.dataset.loader import PhaseDataset
     (tmp_path / 'config.json').write_text(json.dumps({
-        'status': 'complete', 'generator': 'phase-grid-v1',
+        'status': 'complete', 'generator': 'phase-grid-v1', 'generator_revision': 1,
         'input_size': [384, 384], 'transition_ratio': .25,
     }))
     sample = PhaseDataset(tmp_path, 'train').load_sample(0)

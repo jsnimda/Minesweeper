@@ -31,8 +31,11 @@ class PhaseDataset(Dataset):
         config = json.loads((self.root / 'config.json').read_text(encoding='utf-8'))
         if config.get('status') != 'complete':
             raise ValueError('dataset generation is incomplete')
-        if config.get('generator') not in (None, 'phase-grid-v1'):
-            raise ValueError('incompatible phase dataset generator')
+        if config.get('generator') != 'phase-grid-v1':
+            raise ValueError('missing or incompatible phase dataset format')
+        revision = config.get('generator_revision')
+        if type(revision) is not int or revision < 1:
+            raise ValueError('missing or invalid generator revision')
         self.size = tuple(config['input_size'])
         if len(self.size) != 2 or any(type(v) is not int or v <= 0 for v in self.size):
             raise ValueError('invalid dataset input_size')

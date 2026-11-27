@@ -56,17 +56,23 @@ def test_failure_retains_incomplete_snapshot(monkeypatch, tmp_path):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize('format_name', ['phase-grid-v1', None])
-def test_unversioned_historical_dataset_remains_readable(tmp_path, format_name):
+@pytest.mark.parametrize('format_name,revision,valid', [
+    ('phase-grid-v1', 1, True), ('phase-grid-v1', 2, True),
+    (None, 1, False), ('other', 1, False), ('phase-grid-v1', None, False),
+    ('phase-grid-v1', 0, False), ('phase-grid-v1', True, False),
+])
+def test_dataset_format_and_revision(tmp_path, format_name, revision, valid):
     from grid_geometry.dataset.loader import PhaseDataset
     config = {'status': 'complete', 'input_size': [32, 32], 'transition_ratio': .25}
-    if format_name is not None:
-        config['generator'] = format_name
+    if format_name is not None: config['generator'] = format_name
+    if revision is not None: config['generator_revision'] = revision
     (tmp_path / 'config.json').write_text(json.dumps(config))
     (tmp_path / 'train').mkdir()
-    dataset = PhaseDataset(tmp_path, 'train')
-    assert len(dataset) == 0
-    assert 'generator_revision' not in json.loads((tmp_path / 'config.json').read_text())
+    if valid:
+        assert len(PhaseDataset(tmp_path, 'train')) == 0
+    else:
+        with pytest.raises(ValueError, match='format|revision'):
+            PhaseDataset(tmp_path, 'train')
 
 
 def test_provenance_does_not_change_seeded_source_sampling(monkeypatch, tmp_path):

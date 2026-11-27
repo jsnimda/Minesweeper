@@ -52,8 +52,6 @@ class PhaseGridUNet(nn.Module):
         self.dec2 = DoubleConv(64 + 32, 32)
         self.dec3 = DoubleConv(32 + 16, 16)
 
-        # Preserve the original initialization sequence for seeded training.
-        self.segmentation_head = nn.Conv2d(16, 3, kernel_size=1)
         self.segmentation_head = nn.Conv2d(16, 5, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
