@@ -160,3 +160,20 @@ def test_invalid_inputs_and_retained_diagnostics():
     with pytest.raises(ValueError): cells([[0]], domain=(-1, 0, 1, 1))
     diagnostics = {'observation_count': np.ones((1, 1))}
     assert cells([[1]], diagnostics=diagnostics).diagnostics is diagnostics
+
+
+def test_fractional_integrals_remain_in_probability_bounds():
+    values = np.ones((73, 89), dtype=float)
+    mask = np.ones_like(values, dtype=bool)
+    mask[20:40, 30:60] = False
+    c = cells(values, mask, pitch_x=3.17, pitch_y=2.83, origin_x=.19, origin_y=.41)
+    assert np.all((c.coverage >= 0) & (c.coverage <= 1))
+    known = c.observed_area > 0
+    assert np.all((c.mean_occupancy[known] >= 0) & (c.mean_occupancy[known] <= 1))
+    assert np.all((c.observed_area >= 0) & (c.observed_area <= c.full_area))
+    assert np.all(c.integrated_occupancy >= 0)
+    assert np.all(c.integrated_occupancy <= c.observed_area)
+    assert np.all(c.signed_evidence >= -c.coverage)
+    assert np.all(c.signed_evidence <= c.coverage)
+    assert np.all(c.signed_evidence[~known] == 0)
+    assert np.isnan(c.mean_occupancy[~known]).all()

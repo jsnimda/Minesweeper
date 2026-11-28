@@ -209,3 +209,224 @@ def test_long_range_pitch_fit_and_coordinate_wrap():
     assert fit is not None and not fit.ambiguous
     assert fit.pitch_x == pytest.approx(16, abs=.01)
     assert fit.residual_x < .01
+
+
+def _rectangular_settings(**overrides):
+    from grid_geometry.phase.global_geometry import GlobalSettings, RectangularSettings
+    return GlobalSettings(strategy='d7.6', rectangular=RectangularSettings(**overrides))
+
+
+def _paint(observations, box, value):
+    changed = []
+    for o in observations:
+        f = o.fields.copy()
+        x0, y0, x1, y1 = o.box
+        xa, ya, xb, yb = max(x0, box[0]), max(y0, box[1]), min(x1, box[2]), min(y1, box[3])
+        if xa < xb and ya < yb:
+            f[4, ya-y0:yb-y0, xa-x0:xb-x0] = value
+        changed.append(replace(o, fields=f))
+    return changed
+
+
+def test_rectangular_strategy_selection_and_default_compatibility():
+    from grid_geometry.phase.global_geometry import GlobalSettings
+    observations, shape = scene()
+    default = recognize_global(observations, shape)
+    explicit = recognize_global(observations, shape, GlobalSettings(strategy='d7.5'))
+    assert default.strategy == explicit.strategy == 'd7.5'
+    assert default.accepted == explicit.accepted and default.reasons == explicit.reasons
+    with pytest.raises(ValueError): GlobalSettings(strategy='unknown')
+    result = recognize_global(observations, shape, _rectangular_settings())
+    assert result.strategy == 'd7.6' and result.accepted, result.reasons
+    assert (result.geometry.rows, result.geometry.columns) == (8, 12)
+    assert result.experimental['comparison']['available']
+    assert result.experimental['comparison']['extents_agree']
+    assert all(result.boundaries[s]['termination']['count'] for s in ('left', 'right', 'top', 'bottom'))
+
+
+def test_rectangular_large_board_isolated_artifact_and_interior_hole():
+    observations, shape = scene(columns=40, rows=30)
+    # One exterior cell-sized patch is supported, but does not form a run.
+    changed = _paint(observations, (40, 504, 56, 512), 1)
+    changed = _paint(changed, (80, 80, 88, 88), 0)
+    baseline = recognize_global(changed, shape)
+    result = recognize_global(changed, shape, _rectangular_settings())
+    assert not baseline.accepted
+    assert result.accepted, result.reasons
+    assert (result.geometry.rows, result.geometry.columns) == (30, 40)
+    assert result.boundaries['bottom']['continuity']['exterior_supported_count'] == 1
+
+
+def test_rectangular_substantial_exterior_and_disconnected_occupancy():
+    observations, shape = scene()
+    changed = _paint(observations, (40, 152, 120, 160), 1)
+    result = recognize_global(changed, shape, _rectangular_settings())
+    assert not result.accepted
+    assert any('bottom' in reason for reason in result.reasons)
+    # A second separated region must not be treated as a complete single board.
+    changed = _paint(observations, (0, 0, 20, 120), 1)
+    result = recognize_global(changed, shape, _rectangular_settings())
+    assert not result.accepted
+
+
+def test_rectangular_extra_column_and_truncated_baseline_comparison():
+    observations, shape = scene(size=(240, 176))
+    observations = _paint(observations, (216, 24, 232, 152), 1)
+    result = recognize_global(observations, shape, _rectangular_settings())
+    comparison = result.experimental['comparison']
+    assert comparison['available'] and not comparison['extents_agree']
+    assert comparison['difference_cells'][2] == 1
+    assert comparison['experimental_score'] > comparison['baseline_score']
+    # Local terminations still vote for the old edge; do not accept the new one.
+    assert not result.accepted
+    assert any('right termination observations conflict' == r for r in result.reasons)
+
+
+def test_rectangular_censoring_and_missing_coverage_are_incomplete():
+    observations, shape = scene()
+    censored = [replace(o, hypothesis=replace(o.hypothesis, x=replace(o.hypothesis.x, start_censored=True, visible_start=None)))
+                if o.local_valid else o for o in observations]
+    result = recognize_global(censored, shape, _rectangular_settings())
+    assert not result.accepted and result.status == 'incomplete'
+    assert 'left termination unobservable' in result.reasons
+    # Remove occupancy beyond the physical right edge while retaining tiles.
+    missing = []
+    for o in observations:
+        x0, y0, x1, y1 = o.box
+        if x0 >= 216:
+            continue
+        end = min(x1, 216)
+        missing.append(replace(o, box=(x0, y0, end, y1), fields=o.fields[:, :, :end-x0]))
+    result = recognize_global(missing, shape, _rectangular_settings())
+    assert not result.accepted and result.incomplete
+
+
+def test_fusion_diagnostics_overlap_and_rejected_local_fields():
+    from grid_geometry.phase.global_geometry import fuse_occupancy
+    a = np.zeros((5, 4, 4), np.float32); a[4] = .2
+    b = np.zeros((5, 4, 4), np.float32); b[4] = .8
+    observations = [TileObservation((0, 0, 4, 4), None, False, fields=a),
+                    TileObservation((0, 0, 4, 4), None, False, fields=b)]
+    occ, weights, stats = fuse_occupancy(observations, (5, 5), retain_diagnostics=True)
+    assert occ[1, 1] == pytest.approx(.5)
+    assert stats['observation_count'][1, 1] == 2
+    assert stats['weighted_variance'][1, 1] == pytest.approx(.09)
+    assert stats['agreement_observable'][1, 1]
+    assert np.isnan(stats['weighted_variance'][4, 4]) and weights[4, 4] == 0
+    _, _, one = fuse_occupancy(observations[:1], (5, 5), retain_diagnostics=True)
+    assert one['weighted_variance'][1, 1] == pytest.approx(0, abs=1e-15)
+    assert not one['agreement_observable'][1, 1]
+    # Repeating identical observations does not alter geometric weight.
+    once, _ = fuse_occupancy(observations[:1], (5, 5))
+    twice, _ = fuse_occupancy(observations[:1]*2, (5, 5))
+    np.testing.assert_allclose(once, twice, equal_nan=True)
+
+
+def test_experimental_fusion_statistics_and_fractional_lattice():
+    observations, shape = scene(origin=(24.25, 24.25), size=(240, 176))
+    result = recognize_global(observations, shape, _rectangular_settings(retain_fusion_diagnostics=True))
+    assert result.experimental['fusion']['observation_count'].max() > 1
+    assert result.geometry.x_edges[0] == pytest.approx(24.25)
+    assert result.geometry.y_edges[0] == pytest.approx(24.25)
+    assert result.experimental['rectangle'].coordinates[0] == pytest.approx(result.geometry.x_edges[0])
+
+
+def test_rectangular_evidence_domain_limits_and_invalid_settings():
+    from grid_geometry.phase.global_geometry import RectangularSettings
+    with pytest.raises(ValueError): RectangularSettings(max_cells=0)
+    with pytest.raises(ValueError): RectangularSettings(min_transition=float('nan'))
+    observations, shape = scene()
+    result = recognize_global(observations, shape, _rectangular_settings(max_cells=2))
+    assert result.strategy == 'd7.6' and result.geometry is None and not result.accepted
+    assert 'excessive lattice evidence domain' in result.reasons
+
+
+def test_rejected_local_observation_still_contributes_occupancy():
+    observations, shape = scene()
+    index = next(i for i, o in enumerate(observations) if o.local_valid)
+    rejected = observations.copy()
+    rejected[index] = replace(rejected[index], local_valid=False)
+    result = recognize_global(rejected, shape, _rectangular_settings(retain_fusion_diagnostics=True))
+    no_fields = rejected.copy()
+    no_fields[index] = replace(no_fields[index], fields=None)
+    without = recognize_global(no_fields, shape, _rectangular_settings(retain_fusion_diagnostics=True))
+    count = result.experimental['fusion']['observation_count']
+    other = without.experimental['fusion']['observation_count']
+    x0, y0, x1, y1 = rejected[index].box
+    assert np.all(count[y0:y1, x0:x1] == other[y0:y1, x0:x1] + 1)
+
+
+def test_experimental_invalid_domain_and_competing_lattice():
+    with pytest.raises(ValueError):
+        recognize_global([], (0, 12), _rectangular_settings())
+    observations, shape = scene()
+    # A second internally consistent, equally large phase cluster conflicts.
+    valid = [i for i, o in enumerate(observations) if o.local_valid]
+    changed = []
+    for i in valid:
+        o = observations[i]
+        h = replace(o.hypothesis, x=replace(o.hypothesis.x, origin=o.hypothesis.x.origin+8))
+        changed.append(replace(o, hypothesis=h))
+    result = recognize_global(observations + changed, shape, _rectangular_settings())
+    assert not result.accepted
+    assert 'competing lattice hypotheses' in result.reasons
+
+
+@pytest.mark.parametrize('pitch, origin', [(20, (24., 24.)), (16, (24.25, 24.25))])
+def test_partial_exterior_band_with_observed_termination(pitch, origin):
+    right = origin[0] + 8*pitch
+    bottom = origin[1] + 6*pitch
+    # Enough exterior for the .15-.45 pitch probes, but less than one cell.
+    size = (math.ceil(right + .6*pitch), math.ceil(bottom + .6*pitch))
+    observations, shape = scene(columns=8, rows=6, pitch=pitch, origin=origin, size=size)
+    result = recognize_global(observations, shape, _rectangular_settings())
+    assert result.accepted, result.reasons
+    for side in ('right', 'bottom'):
+        boundary = result.boundaries[side]
+        alt = boundary['alternatives']['outward']
+        n = len(boundary['continuity']['segments'])
+        assert boundary['continuity']['observable_count'] == n
+        assert 0 < alt.changed_cell_coverage < .9*n
+        assert alt.normalized_margin >= .1
+
+
+def test_partial_outward_band_weak_observed_evidence_rejects():
+    pitch = 20
+    observations, shape = scene(columns=8, rows=6, pitch=pitch, size=(196, 156))
+    # Right boundary is x=184; observed exterior is 12 pixels wide.
+    changed = _paint(observations, (184, 24, 196, 144), .48)
+    result = recognize_global(changed, shape, _rectangular_settings())
+    assert not result.accepted
+    assert any('right' in reason for reason in result.reasons)
+
+
+def test_partial_exterior_band_missing_strip_is_incomplete():
+    observations, shape = scene(columns=8, rows=6, pitch=20, size=(196, 156))
+    # Retain the board, but remove all pixels outside its right edge.
+    cropped = []
+    for o in observations:
+        x0, y0, x1, y1 = o.box
+        if x0 >= 184:
+            continue
+        end = min(x1, 184)
+        cropped.append(replace(o, box=(x0, y0, end, y1), fields=o.fields[:, :, :end-x0]))
+    result = recognize_global(cropped, shape, _rectangular_settings())
+    assert not result.accepted and result.incomplete
+    assert any('right' in reason and ('unobservable' in reason or 'unavailable' in reason) for reason in result.reasons)
+
+
+def test_experimental_float64_integrals_match_direct_pixel_center_mean():
+    from grid_geometry.phase.global_geometry import _integrals, _region
+    y, x = np.indices((1400, 1800))
+    occupancy = ((x % 37 + y % 29) / 66).astype(np.float32)
+    weights = np.ones(occupancy.shape, dtype=np.float32)
+    precise = _integrals(occupancy, weights, dtype=np.float64)
+    default = _integrals(occupancy, weights)
+    assert precise[0].dtype == np.float64 and default[0].dtype == np.float32
+    for box in ((1700.2, 1300.1, 1704.7, 1303.9), (1600.5, 1250.5, 1602.5, 1252.5)):
+        x0, y0, x1, y1 = box
+        a, b, c, d = (math.ceil(x0-.5), math.ceil(y0-.5), math.ceil(x1-.5), math.ceil(y1-.5))
+        expected = float(np.mean(occupancy[b:d, a:c], dtype=np.float64))
+        mean, coverage = _region(precise, box)
+        assert coverage == 1
+        assert mean == pytest.approx(expected, abs=1e-9)

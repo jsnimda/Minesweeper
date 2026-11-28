@@ -22,6 +22,46 @@ class GlobalSettings:
     min_inner_occupancy: float = .70
     max_outer_occupancy: float = .30
     max_lattice_residual: float = .20
+    strategy: str = 'd7.5'
+    rectangular: 'RectangularSettings' = field(default_factory=lambda: RectangularSettings())
+
+    def __post_init__(self):
+        if self.strategy not in ('d7.5', 'd7.6'):
+            raise ValueError('unknown global recognition strategy')
+
+
+@dataclass(frozen=True)
+class RectangularSettings:
+    """Provisional, uncalibrated experimental safeguards.
+
+    Runs are limited only when both an absolute and a side-relative limit are
+    exceeded, allowing isolated errors while rejecting structured continuation.
+    """
+    min_coverage: float = .90
+    min_cell_fraction: float = .95
+    min_strip_fraction: float = .75
+    min_interior_occupancy: float = .70
+    min_explained_fraction: float = .90
+    min_transition: float = .40
+    min_boundary_margin: float = .10
+    max_exterior_fraction: float = .10
+    max_conflict_run: int = 2
+    max_conflict_run_fraction: float = .10
+    max_termination_residual: float = .35
+    max_cells: int = 200_000
+    max_search_work: int = 20_000_000
+    retain_fusion_diagnostics: bool = False
+
+    def __post_init__(self):
+        for name, value in vars(self).items():
+            if name == 'retain_fusion_diagnostics':
+                if type(value) is not bool:
+                    raise ValueError(f'{name} must be boolean')
+            elif name in ('max_conflict_run', 'max_cells', 'max_search_work'):
+                if type(value) is not int or value < 1:
+                    raise ValueError(f'{name} must be a positive integer')
+            elif not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f'{name} must be finite and in [0, 1]')
 
 
 @dataclass(frozen=True)
@@ -50,12 +90,15 @@ class GlobalResult:
     cell_coverage: np.ndarray | None = None
     boundaries: dict = field(default_factory=dict)
     measurements: dict = field(default_factory=dict)
+    strategy: str = 'd7.5'
+    experimental: dict = field(default_factory=dict)
+    incomplete: bool = False
 
     @property
-    def status(self): return 'accepted' if self.accepted else 'rejected'
+    def status(self): return 'accepted' if self.accepted else ('incomplete' if self.incomplete else 'rejected')
 
 
-def fuse_occupancy(observations, shape):
+def fuse_occupancy(observations, shape, *, retain_diagnostics=False):
     """Weighted mean of sigmoid probabilities; uncovered pixels remain NaN.
 
     Only each tile's real (unpadded) rectangle contributes. A positive taper
@@ -64,6 +107,8 @@ def fuse_occupancy(observations, shape):
     height, width = shape
     total = np.zeros(shape, dtype=np.float64)
     weights = np.zeros(shape, dtype=np.float64)
+    count = np.zeros(shape, dtype=np.uint32) if retain_diagnostics else None
+    second = np.zeros(shape, dtype=np.float64) if retain_diagnostics else None
     for observation in observations:
         if observation.fields is None:
             continue
@@ -81,14 +126,25 @@ def fuse_occupancy(observations, shape):
         weight = taper(h)[:, None] * taper(w)[None, :]
         total[y0:y1, x0:x1] += occ * weight
         weights[y0:y1, x0:x1] += weight
+        if retain_diagnostics:
+            count[y0:y1, x0:x1] += 1
+            second[y0:y1, x0:x1] += occ.astype(np.float64)**2 * weight
     occupancy = np.full(shape, np.nan, dtype=np.float32)
     np.divide(total, weights, out=occupancy, where=weights > 0)
-    return occupancy, weights
+    if not retain_diagnostics:
+        return occupancy, weights
+    mean = np.zeros(shape, dtype=np.float64)
+    np.divide(total, weights, out=mean, where=weights > 0)
+    variance = np.full(shape, np.nan, dtype=np.float64)
+    np.divide(second, weights, out=variance, where=weights > 0)
+    variance[weights > 0] = np.maximum(0., variance[weights > 0] - mean[weights > 0]**2)
+    return occupancy, weights, {'observation_count': count, 'weighted_variance': variance,
+                                'agreement_observable': count >= 2}
 
 
-def _integrals(occupancy, weights):
+def _integrals(occupancy, weights, *, dtype=None):
     valid = weights > 0
-    def integral(a): return np.pad(a, ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+    def integral(a): return np.pad(a, ((1, 0), (1, 0))).cumsum(0, dtype=dtype).cumsum(1, dtype=dtype)
     return integral(np.where(valid, occupancy, 0.)), integral(valid.astype(float))
 
 
@@ -131,9 +187,8 @@ def _termination(observations, indices, axis, leading, pitch):
             'samples': tuple(samples), 'confidence': tuple(confidence)}
 
 
-def recognize_global(observations, shape, settings=GlobalSettings()):
+def _recognize_baseline(observations, shape, settings, occupancy, weights):
     """Fit a lattice and validate a complete rectangular board from evidence."""
-    occupancy, weights = fuse_occupancy(observations, shape)
     lattice = consensus(observations)
     reasons, boundaries = [], {}
     if lattice is None:
@@ -263,3 +318,23 @@ def recognize_global(observations, shape, settings=GlobalSettings()):
                     'min_row_support': float(supported.mean(axis=1).min()), 'min_column_support': float(supported.mean(axis=0).min()),
                     'crop_coverage': float((weights > 0).mean())}
     return GlobalResult(lattice, geometry, not reasons, tuple(reasons), occupancy, weights, cell, coverage, boundaries, measurements)
+
+
+def recognize_global(observations, shape, settings=GlobalSettings()):
+    """Run the unchanged baseline or the explicit experimental strategy."""
+    if settings.strategy == 'd7.5':
+        occupancy, weights = fuse_occupancy(observations, shape)
+        return _recognize_baseline(observations, shape, settings, occupancy, weights)
+    if settings.strategy != 'd7.6':
+        raise ValueError('unknown global recognition strategy')
+    if len(shape) != 2 or any(type(n) is not int or n <= 0 for n in shape):
+        raise ValueError('experimental fusion shape must contain two positive integer dimensions')
+    fused = fuse_occupancy(observations, shape, retain_diagnostics=settings.rectangular.retain_fusion_diagnostics)
+    occupancy, weights = fused[:2]
+    try:
+        baseline = _recognize_baseline(observations, shape, settings, occupancy, weights)
+    except (ValueError, OverflowError, FloatingPointError) as exc:
+        return GlobalResult(None, None, False, (f'invalid lattice evidence: {exc}',), occupancy, weights,
+                            strategy='d7.6', experimental={'fusion': fused[2] if len(fused) == 3 else None})
+    from .rectangular_global import recognize_rectangular
+    return recognize_rectangular(observations, baseline, settings, fused[2] if len(fused) == 3 else None)

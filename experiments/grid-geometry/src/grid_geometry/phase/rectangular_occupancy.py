@@ -134,11 +134,25 @@ def integrate_cells(occupancy, observed, *, pitch_x, pitch_y, origin_x, origin_y
                       - counts[yb[:, None], xa[None, :]] + counts[ya[:, None], xa[None, :]])
     observed_area[covered_pixels == 0] = 0.
     occupied[covered_pixels == 0] = 0.
+    # Inclusion/exclusion subtracts large prefix sums. Bound the plausible
+    # absolute roundoff by the number of input pixels; reject larger errors
+    # rather than masking a numerical failure as occupancy evidence.
+    domain_area = np.diff(yc)[:, None] * np.diff(xc)[None, :]
+    tolerance = 64 * np.finfo(float).eps * values.size
+    if (np.any(domain_area > area + tolerance)
+            or np.any(observed_area < -tolerance) or np.any(observed_area > domain_area + tolerance)
+            or np.any(occupied < -tolerance) or np.any(occupied > observed_area + tolerance)):
+        raise ValueError('fractional integration exceeded numerical error bounds')
+    # Differences of independently rounded lattice edges can exceed the
+    # nominal pitch by a few ulps; the nominal area is the coverage divisor.
+    observed_area = np.clip(observed_area, 0., np.minimum(domain_area, area))
+    occupied = np.minimum(np.maximum(occupied, 0.), observed_area)
     coverage = observed_area / area
     mean = np.full(observed_area.shape, np.nan)
     np.divide(occupied, observed_area, out=mean, where=observed_area > 0)
+    signed = coverage * (2 * np.where(observed_area > 0, mean, .5) - 1)
     return CellEvidence(x0, y0, xe, ye, area, observed_area, occupied, coverage, mean,
-                        (2 * occupied - observed_area) / area, {} if diagnostics is None else diagnostics)
+                        signed, {} if diagnostics is None else diagnostics)
 
 
 def maximum_sum_rectangle(evidence):
