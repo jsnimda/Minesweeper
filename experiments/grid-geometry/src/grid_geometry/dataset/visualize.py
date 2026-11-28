@@ -32,7 +32,6 @@ def visualize_samples(records, positives, destination, seed=42):
         choose(state, first(lambda r: any(predicate(v) for v in ((r.get("transform") or {}).get("scale_x"), (r.get("transform") or {}).get("scale_y")) if v is not None)))
     for context in ("procedural", "desktop"):
         choose(context + " fill", first(lambda r: r.get("background_visible") and r.get("context_type") == context))
-    choose("intentional padding", first(lambda r: r.get("padding_type") is not None))
     choose("source fitting", first(lambda r: r.get("sampled_cell_size") is not None and r.get("resolved_cell_size") is not None and r["sampled_cell_size"] > r["resolved_cell_size"]))
     choose("standalone budget reduction", first(lambda r: r.get("scene_mode") == "game" and r.get("sampled_cell_size") is not None and r.get("requested_cell_size") is not None and r["sampled_cell_size"] > r["requested_cell_size"]))
 
@@ -74,8 +73,6 @@ def visualize_samples(records, positives, destination, seed=42):
         pitch = (r.get("effective_pitch_x"), r.get("effective_pitch_y"))
         details = f" | pitch=({pitch[0]:.2f}, {pitch[1]:.2f})" if all(v is not None for v in pitch) else ""
         coverage = r.get("grid_coverage_fraction")
-        padding = r.get("padding_fraction")
         if coverage is not None: details += f" | coverage={coverage:.1%}"
-        if padding is not None: details += f" | padding={padding:.1%}"
         fig.suptitle(f"{split}/{r['sample_id']} | {r.get('category')} | {r.get('style')}{details}", fontsize=10)
         plt.show()

@@ -78,6 +78,7 @@ def test_tile_padding_is_not_observed():
     _, weights = fuse_occupancy(observations, (16, 22))
     assert np.all(weights[:12, :18] > 0)
     assert not np.any(weights[12:, :])
+    assert not np.any(weights[:, 18:])
 
 
 def test_unobservable_conflicting_and_false_exterior():

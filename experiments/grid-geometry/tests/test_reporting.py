@@ -19,8 +19,9 @@ def test_recognition_correctness_and_outcome_accounting():
                record(False, None, True, None, True, None, True),
                record(False, None, False, None, False, None, False)]
     counts = recognition_counts(records)
-    assert counts['Local geometry precision'] == (2, 4)
-    assert counts['Local geometry recall'] == (2, 5)
+    assert counts['Local lattice precision'] == (2, 4)
+    assert counts['Local lattice recall'] == (2, 5)
+    assert 'Local geometry precision' not in counts  # legacy records lack boundary evidence
     assert counts['Complete board precision'] == (1, 4)
     assert counts['Complete board recall'] == (1, 3)
     assert counts['Partial board false acceptance rate'] == (1, 2)

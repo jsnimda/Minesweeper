@@ -170,7 +170,7 @@ def test_retries_keep_objective_and_resample_source(monkeypatch, tmp_path):
     monkeypatch.setattr(rendering, 'render_scene', fail_first)
     config = GenerationConfig(negative_fraction=0, categories={'complete': 1, 'interior': 0, 'side': 0, 'corner': 0},
         pitch_bins=((12., 14., 1.),), anisotropic_fraction=1, desktop_fraction=0,
-        context_weights={'procedural': 1, 'desktop': 0}, padding_example_fraction=0, progress=False)
+        context_weights={'procedural': 1, 'desktop': 0}, progress=False)
     record = generator._generate_one(_task(tmp_path, config))
     assert len(calls) == 2 and calls[0] == calls[1]
     assert record['attempt'] == 1 and record['requested_zoom'] == 1.5

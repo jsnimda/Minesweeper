@@ -1,5 +1,8 @@
 """Focused Phase D infrastructure checks; all fixtures are synthetic and small."""
 import json
+import math
+from pathlib import Path
+import tomllib
 from types import SimpleNamespace
 
 import numpy as np
@@ -57,7 +60,7 @@ def test_positive_without_phase_supervision():
 
 def test_geometry_categorization():
     result = SimpleNamespace(status='insufficient_evidence', hypotheses=(), reasons=('no support',))
-    records = [geometry_record({'sample_id':'a','geometry':{},'complete':False},result,None), geometry_record({'sample_id':'b','geometry':None},result,None)]
+    records = [geometry_record({'sample_id':'a','geometry':{'origin_x': 0, 'origin_y': 0, 'pitch_x': 8, 'pitch_y': 8, 'visible_box': [0, 0, 24, 24]}, 'board_dimensions': [3, 3], 'known_box': [0, 0, 24, 24], 'complete':False},result,None), geometry_record({'sample_id':'b','geometry':None},result,None)]
     summary = summarize(records)
     assert summary['false_rejection_positive_rate'] == 1 and summary['false_acceptance_negative_rate'] == 0
     assert summary['correct_among_accepted_positive'] is None
@@ -141,6 +144,92 @@ def test_epoch_extension_resume_counter_and_learning_rate(tmp_path, monkeypatch,
     history = train(replace(config, epochs=5), resume=True)
     assert len(history) == 3 and history[-1]['stopping_reason'] == 'early_stopping'
     assert history[-1]['learning_rate'] == pytest.approx(.00025)
+
+
+def test_training_scheduler_defaults_and_alternatives():
+    config = Config('data', 'run')
+    assert (config.scheduler, config.epochs, config.learning_rate,
+            config.cosine_t_max, config.cosine_eta_min) == ('cosine', 50, .001, 50, .00001)
+    assert Config('data', 'run', scheduler='none').scheduler == 'none'
+    step = Config('data', 'run', scheduler='step')
+    assert (step.scheduler, step.step_size, step.gamma) == ('step', 10, .5)
+
+
+def test_standalone_development_schedule():
+    path = Path(__file__).resolve().parents[1] / 'configs' / 'phase_baseline.toml'
+    with path.open('rb') as stream:
+        config = Config(**tomllib.load(stream))
+    assert (config.epochs, config.scheduler, config.cosine_t_max,
+            config.learning_rate, config.cosine_eta_min, config.batch_size) == (50, 'cosine', 50, .001, .00001, 8)
+
+
+def test_cosine_configuration_validation():
+    from dataclasses import replace
+    config = Config('data', 'run', scheduler='cosine')
+    for value in (0, -1, True, 1.5):
+        with pytest.raises(ValueError):
+            replace(config, cosine_t_max=value)
+    for value in (-1., float('nan'), float('inf'), .002):
+        with pytest.raises(ValueError):
+            replace(config, cosine_eta_min=value)
+    assert replace(config, cosine_eta_min=0.).cosine_eta_min == 0.
+    assert replace(config, cosine_eta_min=config.learning_rate).cosine_eta_min == config.learning_rate
+
+
+def test_cosine_sequence_resume_and_horizon(tmp_path, monkeypatch):
+    from dataclasses import replace
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    out = tmp_path / 'run'
+    config = Config(str(root), str(out), epochs=2, device='cpu', scheduler='cosine',
+                    cosine_t_max=4, cosine_eta_min=.00001)
+    fake_epochs(monkeypatch, [1., 1.])
+    history = train(config)
+    fake_epochs(monkeypatch, [1., 1.])
+    history = train(replace(config, epochs=4), resume=True)
+    state = torch.load(out / 'last.pt', map_location='cpu', weights_only=False)
+    assert state['scheduler']['last_epoch'] == 4
+    assert state['optimizer']['param_groups'][0]['lr'] == pytest.approx(.00001)
+    fake_epochs(monkeypatch, [1., 1.])
+    history = train(replace(config, epochs=6), resume=True)
+    expected = [.00001 + (.001 - .00001) * (1 + math.cos(math.pi * i / 4)) / 2 for i in range(4)]
+    assert [row['learning_rate'] for row in history] == pytest.approx(expected + [.00001, .00001])
+    state = torch.load(out / 'last.pt', map_location='cpu', weights_only=False)
+    assert state['scheduler']['last_epoch'] == 4
+    assert state['optimizer']['param_groups'][0]['lr'] == pytest.approx(.00001)
+
+
+@pytest.mark.parametrize('changes', [
+    {'scheduler': 'none'}, {'scheduler': 'step'}, {'cosine_t_max': 5},
+    {'cosine_eta_min': .00002},
+])
+def test_cosine_resume_rejects_incompatible_configuration(tmp_path, monkeypatch, changes):
+    from dataclasses import replace
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    config = Config(str(root), str(tmp_path / 'run'), epochs=1, device='cpu', scheduler='cosine')
+    fake_epochs(monkeypatch, [1.]); train(config)
+    with pytest.raises(ValueError, match='resume configuration differs'):
+        train(replace(config, epochs=2, **changes), resume=True)
+
+
+@pytest.mark.parametrize('scheduler', ['none', 'step'])
+def test_resume_old_config_without_cosine_fields(tmp_path, monkeypatch, scheduler):
+    from dataclasses import replace
+    root = tmp_path / 'data'; root.mkdir(); dataset(root)
+    out = tmp_path / 'run'
+    config = Config(str(root), str(out), epochs=1, device='cpu', scheduler=scheduler, step_size=1)
+    fake_epochs(monkeypatch, [1.]); train(config)
+    state = torch.load(out / 'last.pt', map_location='cpu', weights_only=False)
+    state['config'].pop('cosine_t_max'); state['config'].pop('cosine_eta_min')
+    torch.save(state, out / 'last.pt')
+    with pytest.raises(ValueError, match='resume configuration differs'):
+        train(replace(config, epochs=2, learning_rate=.002), resume=True)
+    with pytest.raises(ValueError, match='resume configuration differs'):
+        train(replace(config, epochs=2, cosine_t_max=10), resume=True)
+    with pytest.raises(ValueError, match='resume configuration differs'):
+        train(replace(config, epochs=2, scheduler='cosine'), resume=True)
+    fake_epochs(monkeypatch, [1.])
+    history = train(replace(config, epochs=2), resume=True)
+    assert history[-1]['learning_rate'] == pytest.approx(.0005 if scheduler == 'step' else .001)
 
 
 def test_unsupported_resume_version_and_sidecar_recovery(tmp_path, monkeypatch):

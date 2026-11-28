@@ -122,7 +122,7 @@ def validate_phase(fields, hypothesis: GridHypothesis, *, decoder_status="fitted
         reasons.append("unsupported column")
     if _block_missing(observable & ~supported, settings.max_missing_block):
         reasons.append("cluster of unsupported cells")
-    local_reasons = tuple(reasons)
+    local_reasons = list(reasons)
     if not observable.all():
         reasons.append("cell centers outside observable image")
     side_evidence = {}
@@ -169,11 +169,15 @@ def validate_phase(fields, hypothesis: GridHypothesis, *, decoder_status="fitted
             reasons.append(f"{name} lacks terminal support")
         if exterior is not None and exterior > settings.max_exterior_occupancy:
             reasons.append(f"{name} exterior occupancy indicates continuation")
+            if not censored and exterior_phase is not None and exterior_phase >= settings.min_side_support:
+                local_reasons.append(f"{name} extent omits supported lattice")
         if offset is not None and offset > settings.max_visible_offset_cells:
             reasons.append(f"{name} visible boundary inconsistent with lattice")
+            if not censored:
+                local_reasons.append(f"{name} visible boundary inconsistent with lattice")
     measurements = {"cell_coverage": coverage, "observable_cells": int(observable.sum()), "coherence_x": coherence_x,
                     "coherence_y": coherence_y, "mean_magnitude_x": float((mx * weighted).sum() / denominator),
                     "mean_magnitude_y": float((my * weighted).sum() / denominator),
                     "minimum_row_support": float(rows.min()), "minimum_column_support": float(columns.min())}
     return ValidationResult(not reasons, tuple(reasons), measurements, occupancy, mx, my, ax, ay,
-                            supported, rows, columns, side_evidence, not local_reasons, local_reasons, observable)
+                            supported, rows, columns, side_evidence, not local_reasons, tuple(local_reasons), observable)

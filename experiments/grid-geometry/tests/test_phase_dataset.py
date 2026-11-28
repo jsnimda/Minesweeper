@@ -143,7 +143,6 @@ def test_compact_fractions_match_targets_with_fractional_geometry():
     assert fractions['phase_supervision_fraction'] == pytest.approx(phase.mean())
     assert fractions['grid_coverage_fraction'] == pytest.approx(phase.mean())
     assert fractions['grid_occupancy_fraction'] == pytest.approx((targets[4] * occupancy_mask).mean(), abs=1e-6)
-    assert fractions['padding_fraction'] == pytest.approx(1 - known.mean())
     negative = sample_fractions(size, known_box, None, .25)
     assert negative['phase_supervision_fraction'] is None and negative['grid_occupancy_fraction'] == 0
 
@@ -151,17 +150,13 @@ def test_compact_fractions_match_targets_with_fractional_geometry():
 def test_coverage_summary_and_config_validation():
     from grid_geometry.dataset.generator import summarize_fractions
     records = [dict(category='complete', actual_pitch_bin_x='6-11', grid_coverage_fraction=.04,
-                    phase_supervision_fraction=.04, grid_occupancy_fraction=.04, padding_fraction=.2),
+                    phase_supervision_fraction=.04, grid_occupancy_fraction=.04),
                dict(category='negative', actual_pitch_bin_x=None, grid_coverage_fraction=None,
-                    phase_supervision_fraction=None, grid_occupancy_fraction=0., padding_fraction=0.)]
+                    phase_supervision_fraction=None, grid_occupancy_fraction=0.)]
     result = summarize_fractions(records)
-    assert result['overall']['samples_with_padding'] == 1
-    assert result['overall']['fraction_with_padding'] == .5
     assert result['overall']['positive_fraction_below_coverage']['0.05'] == 1
     assert result['by_pitch_bin']['6-11']['positive_samples'] == 1
-    assert summarize_fractions([])['overall']['fraction_with_padding'] is None
-    with pytest.raises(ValueError):
-        GenerationConfig(padding_example_fraction=1.1)
+    assert summarize_fractions([])['overall']['samples'] == 0
 
 
 def test_sampling_preference_keeps_standard_and_custom_options():
@@ -176,31 +171,32 @@ def test_sampling_preference_keeps_standard_and_custom_options():
 
 
 @pytest.mark.parametrize('negative_fraction', [0., 1.])
-def test_generated_context_and_intentional_padding(tmp_path, negative_fraction):
+def test_generated_samples_have_full_known_region(tmp_path, negative_fraction):
     config = GenerationConfig(train=3, val=0, test=0, workers=1, progress=False,
-                              negative_fraction=negative_fraction, padding_example_fraction=1.,
+                              negative_fraction=negative_fraction,
                               context_weights={'procedural': 1, 'desktop': 0})
     root = tmp_path / 'generated'
     stats = generate_dataset(root, config)
     dataset = PhaseDataset(root, 'train')
+    obsolete = {'intentional_padding_requested', 'accidental_padding_fraction',
+                'padding_type', 'padding_side', 'padding_extent', 'padding_color', 'padding_fraction'}
     for index in range(len(dataset)):
         sample = dataset.load_sample(index)
-        record = sample.metadata
-        assert record['padding_type'] is not None
-        assert record['accidental_padding_fraction'] == 0
-        assert not sample.occupancy_mask.all()
+        assert sample.metadata['known_box'] == [0, 0, *dataset.size]
+        assert obsolete.isdisjoint(sample.metadata)
+        assert sample.occupancy_mask.all()
         assert not (sample.phase_mask & ~sample.occupancy_mask).any()
-        assert sample.occupancy_mask.any()
         if negative_fraction == 1.:
             assert not sample.phase_mask.any() and not sample.targets[4].any()
-    assert stats['splits']['train']['padding']['realized_rate'] == 1.
+    assert 'padding' not in stats['splits']['train']
+    saved = json.loads((root / 'config.json').read_text())
+    assert saved['generator_revision'] == 2
+    assert 'padding_example_fraction' not in saved and 'padding_max_fraction' not in saved
 
 
 def test_context_configuration_validation():
     with pytest.raises(ValueError):
         GenerationConfig(context_weights={'procedural': 1})
-    with pytest.raises(ValueError):
-        GenerationConfig(padding_max_fraction=0)
 
 
 def test_fractional_crop_transform_preserves_true_boundary():
@@ -209,21 +205,6 @@ def test_fractional_crop_transform_preserves_true_boundary():
     assert transformed.origin_x == pytest.approx(3.9)
     assert transformed.pitch_x == pytest.approx(10.)
     assert transformed.visible_box[0] == pytest.approx(3.9)
-
-
-def test_normal_samples_have_known_background_and_no_padding(tmp_path):
-    config = GenerationConfig(train=3, val=0, test=0, workers=1, progress=False,
-        negative_fraction=0., padding_example_fraction=0.,
-        context_weights={'procedural': 1, 'desktop': 0})
-    root = tmp_path / 'ordinary'
-    stats = generate_dataset(root, config)
-    dataset = PhaseDataset(root, 'train')
-    for index in range(len(dataset)):
-        sample = dataset.load_sample(index)
-        assert sample.occupancy_mask.all()
-        assert sample.metadata['padding_fraction'] == 0
-        assert sample.metadata['accidental_padding_fraction'] == 0
-    assert stats['splits']['train']['padding']['accidental_samples'] == 0
 
 
 @pytest.mark.parametrize('context', ['procedural', 'desktop'])

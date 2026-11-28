@@ -19,7 +19,7 @@ def test_configuration_snapshot_and_overrides(monkeypatch, tmp_path):
     generator.generate_dataset(tmp_path / 'geometry', config)
     result = json.loads((tmp_path / 'geometry' / 'config.json').read_text())
     assert result['experiment'] == 'grid-geometry' and result['dataset_name'] == 'geometry'
-    assert result['generator'] == 'phase-grid-v1' and result['generator_revision'] == 1
+    assert result['generator'] == 'phase-grid-v1' and result['generator_revision'] == 2
     assert result['game_zoom'] == {'1.0': 1} and result['standalone_source_budget'] is None
     assert result['source_policy']['source_cell_size']['normal'] == list(SOURCE_CELL_SIZE['normal'])
     assert result['source_policy']['desktop_board_area_limit'] == sampler.DESKTOP_BOARD_AREA_LIMIT

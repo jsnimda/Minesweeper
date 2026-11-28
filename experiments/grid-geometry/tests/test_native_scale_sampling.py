@@ -42,7 +42,7 @@ def _small_scene(rng, game, negative_kind=None, desktop_fraction=.8, *, display_
 def _config(**kwargs):
     defaults = dict(negative_fraction=0., categories={'complete': 1, 'interior': 0, 'side': 0, 'corner': 0},
                     pitch_bins=((12., 12., 1.),), anisotropic_fraction=1., anisotropic_max=.05,
-                    padding_example_fraction=0., context_weights={'procedural': 1, 'desktop': 0},
+                    context_weights={'procedural': 1, 'desktop': 0},
                     progress=False)
     defaults.update(kwargs)
     return GenerationConfig(**defaults)

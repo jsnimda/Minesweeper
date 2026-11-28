@@ -17,7 +17,7 @@ class AcceptedStatistics:
         result = Summary()
         for name in ('source_mode', 'category', 'requested_positive_category', 'realized_positive_category',
                      'requested_pitch_bin', 'generated_fill', 'context_type', 'fill_procedural_subtype',
-                     'anisotropy_selected', 'resampling_x', 'resampling_y', 'padding_side',
+                     'anisotropy_selected', 'resampling_x', 'resampling_y',
                      'augmentation_resampling', 'augmentation_blur', 'standalone_source_budget'):
             result.cat(name, None)
         for name, kind in (
@@ -25,8 +25,6 @@ class AcceptedStatistics:
             ('desired_pitch', 'pitch'), ('final_pitch_x', 'pitch'), ('final_pitch_y', 'pitch'),
             ('pitch_error_x', 'error'), ('pitch_error_y', 'error'), ('anisotropy_ratio', 'scale'),
             ('resampling_scale_x', 'scale'), ('resampling_scale_y', 'scale'),
-            ('padding_extent', 'dimension'), ('padding_extent_fraction', 'fraction'),
-            ('known_fraction', 'fraction'), ('padding_fraction', 'fraction'),
             ('grid_bbox_image_fraction', 'fraction'), ('grid_coverage_fraction', 'fraction'), ('phase_supervision_fraction', 'fraction'),
             ('grid_occupancy_fraction', 'fraction'), ('augmentation_brightness', 'photometric'),
             ('augmentation_contrast', 'photometric'), ('board_pitch_x', 'pitch'), ('board_pitch_y', 'pitch'),
@@ -38,8 +36,7 @@ class AcceptedStatistics:
 
     def add(self, record):
         required = ('sample_id', 'split', 'board_id', 'scene_mode', 'source_size', 'final_size',
-                    'geometry', 'transform', 'padding_type', 'padding_side', 'padding_extent',
-                    'padding_fraction', 'augmentation')
+                    'geometry', 'transform', 'augmentation')
         missing = [key for key in required if key not in record]
         if missing:
             raise ValueError(f'missing required geometry record fields: {missing}')
@@ -57,12 +54,6 @@ class AcceptedStatistics:
         augmentation = record['augmentation']
         if not isinstance(augmentation, dict) or any(k not in augmentation for k in ('resampling', 'blur', 'brightness', 'contrast')):
             raise ValueError('invalid geometry augmentation metadata')
-        if (type(record['padding_extent']) is not int or record['padding_extent'] < 0
-                or type(record['padding_fraction']) not in (int, float)
-                or not math.isfinite(record['padding_fraction']) or not 0 <= record['padding_fraction'] <= 1):
-            raise ValueError('invalid geometry padding observation')
-        if record['padding_type'] is not None and record['padding_side'] not in ('left', 'right', 'top', 'bottom'):
-            raise ValueError('invalid geometry padding side')
         board_id = record['board_id']
         if board_id is not None:
             if not isinstance(board_id, str) or not board_id:
@@ -168,18 +159,6 @@ class AcceptedStatistics:
             if value is not None:
                 state = 'neutral' if abs(value-1.) <= NEUTRAL_TOLERANCE else 'upsampling' if value > 1 else 'downsampling'
                 summary.cat('resampling_' + axis, state)
-        padding = record['padding_type']
-        summary.totals['padding_observations'] += 1
-        if padding is not None:
-            summary.totals['padded_images'] += 1
-            summary.cat('padding_side', record.get('padding_side'))
-            extent, size, side = record.get('padding_extent'), record.get('final_size'), record.get('padding_side')
-            summary.num('padding_extent', extent, 'dimension')
-            if extent is not None and size and side:
-                summary.num('padding_extent_fraction', extent/size[0 if side in ('left', 'right') else 1], 'fraction')
-        fraction = record['padding_fraction']
-        summary.num('padding_fraction', fraction, 'fraction')
-        if fraction is not None: summary.num('known_fraction', 1-fraction, 'fraction')
         for name in ('grid_coverage_fraction', 'phase_supervision_fraction', 'grid_occupancy_fraction'):
             summary.num(name, record.get(name), 'fraction')
         augmentation = record['augmentation']
@@ -188,10 +167,15 @@ class AcceptedStatistics:
 
     def result(self, splits):
         requested = dict(splits) if isinstance(splits, dict) else {split: None for split in splits}
+        def geometry_result(summary):
+            result = summary.result()
+            for key in ('padded_images', 'padding_observations', 'padded_image_rate'):
+                result['totals'].pop(key, None)
+            return result
+
         return {'conventions': {**CONVENTIONS, 'resampling_neutral_tolerance': NEUTRAL_TOLERANCE,
             'coverage': 'bbox fraction is continuous clipped area / final image area; grid/phase coverage is pixel-center count restricted to known pixels / image pixels; occupancy is soft target mean',
-            'padding_extent_fraction': 'fraction of corresponding final image dimension',
             'crop_category': 'accepted category passed the existing edge-count validation'},
             'requested_images': requested,
-            'overall': self.overall.result(),
-            'splits': {split: self.splits.get(split, self._new()).result() for split in requested}}
+            'overall': geometry_result(self.overall),
+            'splits': {split: geometry_result(self.splits.get(split, self._new())) for split in requested}}

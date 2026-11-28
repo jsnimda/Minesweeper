@@ -8,7 +8,7 @@ from grid_geometry.dataset.validation import validate_saved_dataset, validate_tr
 
 @pytest.fixture
 def dataset(tmp_path):
-    config = dict(experiment='grid-geometry', generator='phase-grid-v1', generator_revision=1,
+    config = dict(experiment='grid-geometry', generator='phase-grid-v1', generator_revision=2,
                   status='complete', input_size=[384, 384], transition_ratio=0.25,
                   train=1, val=1, test=1)
     (tmp_path / 'config.json').write_text(json.dumps(config))
@@ -40,7 +40,7 @@ def test_valid_and_lightweight_validation(dataset):
 
 
 @pytest.mark.parametrize('key,value', [('experiment', 'other'), ('generator', 'other'),
-                                      ('generator_revision', 2), ('generator_revision', True),
+                                      ('generator_revision', 1), ('generator_revision', True),
                                       ('status', 'generating')])
 def test_saved_identity(dataset, key, value):
     path = dataset / 'config.json'

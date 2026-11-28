@@ -35,6 +35,15 @@ def test_complete_requires_observed_terminations():
     assert not validate_phase(np.zeros_like(fields), h).local_accepted
 
 
+def test_local_extent_rejects_inconsistent_observed_boundary():
+    h = hypothesis(24, 24)
+    fields = phase_targets((144, 144), PhaseGeometry(24, 24, 12, 12, (24, 24, 120, 120)))[0]
+    inconsistent = replace(h, x=replace(h.x, visible_end=114))
+    checked = validate_phase(fields, inconsistent)
+    assert not checked.local_accepted
+    assert 'right visible boundary inconsistent with lattice' in checked.local_reasons
+
+
 def test_tile_offsets_periodic_alignment_and_conflicts():
     a = TileObservation((0, 0, 96, 96), hypothesis(4, 8), True)
     b = TileObservation((48, 24, 144, 120), hypothesis(4, 8), True)
