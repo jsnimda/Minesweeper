@@ -1,121 +1,80 @@
+import sys
 from pathlib import Path
 from time import perf_counter
 import numpy as np
 import skia
 from PIL import Image
 from PySide6.QtCore import QEvent, QSettings, QSize, Qt, QThread, Signal, QTimer, Slot
-from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPalette, QPainter, QPixmap
-from PySide6.QtWidgets import (QApplication, QDialog, QPushButton, QStackedWidget, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QDockWidget, QTabWidget, QToolButton, QFileDialog, QComboBox, QLabel, QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QTextEdit, QListWidget, QMessageBox, QInputDialog, QScrollArea, QToolBar)
+from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPalette, QPainter
+from PySide6.QtWidgets import (QApplication, QDialog, QPushButton, QStackedWidget, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QDockWidget, QTabWidget, QToolButton, QFileDialog, QComboBox, QLabel, QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QTextEdit, QListWidget, QMessageBox, QInputDialog, QScrollArea, QToolBar, QSizePolicy, QMenu)
 from .capture import Frame, capture_frame, monitors
 from .pipeline import Pipeline, Settings, ROOT, GEOMETRY_ROOT
-from .rendering import draw
+from .rendering import draw, draw_viewer_visualization, RecognitionStyle
+from .viewer import ImageViewer, surface_pixmap
 from .preferences import DEFAULTS, PreferencesDialog
 from .appearance import apply_appearance
 from .icons import icon
+from .zoom_text import parse_percent, format_percent
+from .viewport import WHEEL_STEP_FACTOR
 
 
-def skia_image(image):
-    return skia.Image.fromarray(np.asarray(image.convert('RGBA')).copy())
-
-
-def surface_pixmap(surface):
-    snapshot = surface.makeImageSnapshot()
-    pixels = snapshot.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType, alphaType=skia.AlphaType.kPremul_AlphaType)
-    h, w = pixels.shape[:2]
-    return QPixmap.fromImage(QImage(pixels.data, w, h, pixels.strides[0], QImage.Format.Format_RGBA8888_Premultiplied).copy())
-
-
-class Canvas(QWidget):
-    def __init__(self, main):
+class ZoomSelector(QComboBox):
+    """Editable percentage which leaves the user's active edit untouched."""
+    def __init__(self, viewer):
         super().__init__()
-        self.main = main
-        self.scale = 1.0
-        self.offset = [0., 0.]
-        self.drag = None
-        self.setMouseTracking(True)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setMinimumSize(200, 200)
+        self.viewer = viewer
+        self.dirty = False
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.addItems([f'{n}%' for n in (10, 25, 50, 75, 100, 200, 400, 800, 1600, 3200, 6400)])
+        self.setMinimumWidth(90); self.setMaximumWidth(120)
+        self.setToolTip('Physical magnification; enter a percentage')
+        self.lineEdit().textEdited.connect(self._edited)
+        self.lineEdit().editingFinished.connect(self.commit)
+        self.activated.connect(self._selected)
+        viewer.magnification_changed.connect(self.refresh)
+        self.refresh(viewer.magnification())
 
-    def fit(self):
-        if self.main.frame:
-            w, h = self.main.frame.image.size
-            self.scale = min(self.width()/w, self.height()/h)
-            self.offset = [(self.width()-w*self.scale)/2, (self.height()-h*self.scale)/2]
-            self.update()
-            self.main.update_zoom_status()
+    def _edited(self, text):
+        self.dirty = True
 
-    def paintEvent(self, event):
-        if self.width() <= 0 or self.height() <= 0: return
-        dpr = self.devicePixelRatioF()
-        surface = skia.Surface(max(1, round(self.width()*dpr)), max(1, round(self.height()*dpr)))
-        canvas = surface.getCanvas()
-        canvas.clear(0xff272727)
-        canvas.scale(dpr, dpr)
-        if self.main.frame:
-            canvas.translate(*self.offset)
-            canvas.scale(self.scale, self.scale)
-            canvas.drawImage(self.main.image_skia, 0, 0)
-            grid = self.main.selected_grid()
-            heat = None
-            tile_offset = (0, 0)
-            if grid is not None and grid.phase_data:
-                mode = self.main.heatmap.currentText()
-                phase = grid.phase_data
-                if mode == 'Phase occupancy': heat = phase['global'].occupancy
-                elif mode == 'Phase coverage': heat = (phase['global'].weights > 0).astype(float)
-                elif mode in ('Tile horizontal phase', 'Tile vertical phase'):
-                    observations = phase['observations']
-                    o = observations[min(self.main.tile_inspect.value(), len(observations)-1)]
-                    if o.fields is not None:
-                        axis = 0 if mode == 'Tile horizontal phase' else 2
-                        # Map phase angle to a scalar hue-like ramp, masked by occupancy.
-                        heat = (np.arctan2(o.fields[axis+1], o.fields[axis]) / (2*np.pi) + .5) * o.fields[4]
-                        tile_offset = o.box[:2]
-            if heat is not None:
-                valid = np.isfinite(heat)
-                heat = np.nan_to_num(np.clip(heat*255, 0, 255)).astype(np.uint8)
-                rgba = np.zeros((*heat.shape, 4), dtype=np.uint8)
-                rgba[..., 0] = 255
-                rgba[..., 3] = np.where(valid, heat // 2, 0).astype(np.uint8)
-                hm = skia.Image.fromarray(rgba)
-                tr = grid.heatmap_transform
-                left, top = grid.crop.box[:2]
-                rect = skia.Rect.MakeXYWH(left+(tile_offset[0]-tr.offset[0])/tr.scale_x, top+(tile_offset[1]-tr.offset[1])/tr.scale_y, heat.shape[1]/tr.scale_x, heat.shape[0]/tr.scale_y)
-                canvas.save()
-                canvas.clipRect(skia.Rect.MakeLTRB(*grid.crop.box))
-                canvas.drawImageRect(hm, rect)
-                canvas.restore()
-            draw(canvas, self.main.result, self.main.layers(), self.main.selected_detection())
-        painter = QPainter(self)
-        pixmap = surface_pixmap(surface); pixmap.setDevicePixelRatio(dpr)
-        painter.drawPixmap(0, 0, pixmap)
+    def _selected(self, index):
+        self.dirty = True
+        self.commit()
+
+    def refresh(self, value):
+        if not self.dirty:
+            self.setEditText(format_percent(value))
+
+    def commit(self):
+        if not self.dirty:
+            return
+        self.dirty = False
+        try:
+            self.viewer.set_magnification(parse_percent(self.currentText()))
+        except ValueError:
+            pass
+        self.refresh(self.viewer.magnification())
+
+    def event(self, event):
+        if (event.type() == QEvent.Type.ShortcutOverride and event.key() == Qt.Key.Key_Escape
+                and not self.view().isVisible()):
+            event.accept()
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and not self.view().isVisible():
+            # Focus-out may emit editingFinished; clear the pending edit first.
+            self.dirty = False
+            self.refresh(self.viewer.magnification())
+            self.viewer.setFocus(Qt.FocusReason.OtherFocusReason)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def wheelEvent(self, event):
-        factor = 1.2 if event.angleDelta().y() > 0 else 1/1.2
-        x, y = event.position().x(), event.position().y()
-        self.offset = [x-(x-self.offset[0])*factor, y-(y-self.offset[1])*factor]
-        self.scale *= factor
-        self.update()
-        self.main.update_zoom_status()
-
-    def mousePressEvent(self, event):
-        self.setFocus(Qt.FocusReason.MouseFocusReason)
-        self.drag = event.position()
-
-    def mouseReleaseEvent(self, event):
-        self.drag = None
-
-    def mouseMoveEvent(self, event):
-        p = event.position()
-        if self.drag is not None:
-            self.offset[0] += p.x()-self.drag.x(); self.offset[1] += p.y()-self.drag.y()
-            self.drag = p; self.update()
-        if self.main.frame:
-            self.main.cursor_status.setText(f'Image: {(p.x()-self.offset[0])/self.scale:.1f}, {(p.y()-self.offset[1])/self.scale:.1f}')
-
-    def leaveEvent(self, event):
-        self.main.cursor_status.setText('Cursor: —')
-        super().leaveEvent(event)
+        event.ignore()
 
 
 class Overlay(QWidget):
@@ -160,7 +119,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle('Minesweeper Recognition Lab')
         self.resize(1450, 850)
-        self.pipeline = Pipeline(); self.frame = None; self.result = None; self.image_skia = None
+        self.pipeline = Pipeline(); self.frame = None; self.result = None
         self.generation = 0; self.worker = None; self.folder_files = []; self.capture_in_progress = False
         self.app_settings = QSettings('Minesweeper Recognition Lab', 'Recognition Lab')
         self.preferences = self.read_preferences()
@@ -168,10 +127,17 @@ class MainWindow(QMainWindow):
         self.focus_state = None
         self.folder_open = False
         self.overlay = Overlay(self)
-        self.canvas = Canvas(self)
+        self.canvas = ImageViewer()
         self.workspace = QStackedWidget()
         self.setCentralWidget(self.workspace)
-        self.workspace.addWidget(self.canvas)
+        self.viewer_container = QWidget()
+        self.viewer_layout = QVBoxLayout(self.viewer_container)
+        self.viewer_layout.setContentsMargins(0, 0, 0, 0); self.viewer_layout.setSpacing(0)
+        self.viewer_toolbar = QToolBar('Viewer')
+        self.viewer_toolbar.setMovable(False)
+        self.viewer_layout.addWidget(self.viewer_toolbar)
+        self.viewer_layout.addWidget(self.canvas, 1)
+        self.workspace.addWidget(self.viewer_container)
         self.setDockNestingEnabled(True)
 
         # Commands are shared by menus, toolbar, and model controls.
@@ -201,11 +167,14 @@ class MainWindow(QMainWindow):
             ('exit_focus', 'Exit focus mode', self.exit_focus),
         ]:
             action = QAction(title, self)
+            if sys.platform == 'darwin':
+                action.setIconVisibleInMenu(False)
             action.triggered.connect(fn)
             self.actions[key] = action
         self.actions['focus'].setCheckable(True)
         self.actions['grid'].setCheckable(True)
         self.setup_shortcuts()
+        self.setup_viewer_toolbar()
         welcome = QWidget(); welcome.setAutoFillBackground(True)
         welcome_palette = QPalette()
         welcome_palette.setColor(QPalette.ColorRole.Window, QColor('#272727'))
@@ -255,8 +224,34 @@ class MainWindow(QMainWindow):
         self.inspect.setPlaceholderText('Run recognition to inspect results.')
         tabs.addTab(self.inspect, 'Inspect')
         layers_panel = QWidget(); layers_form = QFormLayout(layers_panel)
+        self.image_sampling = QComboBox()
+        self.image_sampling.addItem('Nearest neighbor', 'nearest')
+        self.image_sampling.addItem('Bilinear', 'smooth')
+        self.image_sampling.currentIndexChanged.connect(lambda _: self.canvas.set_sampling(self.image_sampling.currentData()))
+        layers_form.addRow('Image sampling', self.image_sampling)
+        self.pixel_grid = QCheckBox('Show source pixel grid')
+        self.pixel_grid.toggled.connect(self.canvas.set_pixel_grid_visible)
+        layers_form.addRow(self.pixel_grid)
+        self.toolbar_pixel_grid.toggled.connect(self.pixel_grid.setChecked)
+        self.pixel_grid.toggled.connect(self.toolbar_pixel_grid.setChecked)
+        self.image_sampling.currentIndexChanged.connect(self.sync_sampling_action)
+        self.sync_sampling_action()
         self.heatmap = QComboBox(); self.heatmap.addItems(['None', 'Phase occupancy', 'Phase coverage', 'Tile horizontal phase', 'Tile vertical phase']); self.heatmap.currentIndexChanged.connect(self.redraw); layers_form.addRow('Heatmap', self.heatmap)
         self.tile_inspect = self.spin(0, 0, 99999); self.tile_inspect.valueChanged.connect(self.redraw); layers_form.addRow('Phase tile index (zero-based)', self.tile_inspect)
+        self.stroke_mode = QComboBox()
+        self.stroke_mode.addItem('Screen space', 'screen')
+        self.stroke_mode.addItem('Image space', 'image')
+        layers_form.addRow('Recognition stroke mode', self.stroke_mode)
+        self.stroke_width = QDoubleSpinBox()
+        self.stroke_width.setRange(.5, 8); self.stroke_width.setSingleStep(.5); self.stroke_width.setValue(1)
+        self.stroke_width.setSuffix(' physical px')
+        layers_form.addRow('Geometry stroke width', self.stroke_width)
+        self.vector_opacity = QSpinBox()
+        self.vector_opacity.setRange(0, 100); self.vector_opacity.setValue(100); self.vector_opacity.setSuffix('%')
+        layers_form.addRow('Recognition vector opacity', self.vector_opacity)
+        self.stroke_mode.currentIndexChanged.connect(self.stroke_mode_changed)
+        self.stroke_width.valueChanged.connect(self.redraw)
+        self.vector_opacity.valueChanged.connect(self.redraw)
         self.layer_widgets = {}
         for key, label in [('detections','Detections'),('crops','Crop boundaries'),('boundaries','Grid boundaries'),('centers','Cell centers'), ('tiles','Phase tile layout'), ('terminations','Phase observed terminations'), ('cell_support','Phase cell support')]:
             check = QCheckBox(label); check.setChecked(key not in ('tiles', 'terminations', 'cell_support')); check.toggled.connect(self.redraw); self.layer_widgets[key] = check; layers_form.addRow(check)
@@ -329,13 +324,16 @@ class MainWindow(QMainWindow):
                            ('preferences', 'Preferences')]:
             self.actions[key].setIconText(label)
         for group in (('open_image', 'open_folder', 'capture_screen', 'capture_region'),
-                      ('yolo', 'geometry', 'all'), ('fit', 'actual', 'focus'), ('preferences',)):
+                      ('yolo', 'geometry', 'all'), ('preferences',)):
             if self.bar.actions(): self.bar.addSeparator()
             for key in group: self.bar.addAction(self.actions[key])
 
         self.image_status = QLabel('Image: —'); self.zoom_status = QLabel('Zoom: —')
         self.cursor_status = QLabel('Cursor: —'); self.device_status = QLabel('Device setting: auto')
         for label in (self.image_status, self.zoom_status, self.cursor_status, self.device_status): self.statusBar().addPermanentWidget(label)
+        self.canvas.magnification_changed.connect(self.update_zoom_status)
+        self.canvas.cursor_changed.connect(self.update_cursor_status)
+        self.canvas.cursor_left.connect(lambda: self.cursor_status.setText('Cursor: —'))
         self.device.currentTextChanged.connect(lambda value: self.device_status.setText(f'Device setting: {value}'))
         self.statusBar().showMessage('Ready')
         self.refresh_monitors()
@@ -355,8 +353,65 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(panel)
         return scroll
 
-    def update_zoom_status(self):
-        self.zoom_status.setText(f'Zoom: {self.canvas.scale * 100:.1f}%')
+    def update_cursor_status(self, inspection):
+        if inspection.pixel is None:
+            detail = 'Pixel: — | RGB: —'
+        else:
+            x, y = inspection.pixel
+            r, g, b, _ = inspection.rgba
+            detail = f'Pixel: {x}, {y} | RGB: {r}, {g}, {b}'
+        self.cursor_status.setText(f'Cursor: {inspection.x:.3f}, {inspection.y:.3f} | {detail}')
+
+    def update_zoom_status(self, magnification):
+        self.zoom_status.setText(f'Zoom: {format_percent(magnification)}')
+
+    def setup_viewer_toolbar(self):
+        bar = self.viewer_toolbar
+        bar.setIconSize(QSize(16, 16))
+        self.zoom_out = QAction('Zoom out', self); self.zoom_out.setToolTip('Zoom out at viewport center')
+        self.zoom_out.triggered.connect(lambda: self.canvas.zoom_by(1 / WHEEL_STEP_FACTOR))
+        bar.addAction(self.zoom_out)
+        self.zoom_selector = ZoomSelector(self.canvas); bar.addWidget(self.zoom_selector)
+        self.zoom_in = QAction('Zoom in', self); self.zoom_in.setToolTip('Zoom in at viewport center')
+        self.zoom_in.triggered.connect(lambda: self.canvas.zoom_by(WHEEL_STEP_FACTOR))
+        bar.addAction(self.zoom_in)
+        bar.addSeparator()
+        bar.addAction(self.actions['fit'])
+        self.actions['actual'].setIconText('1:1')
+        bar.addAction(self.actions['actual'])
+        bar.widgetForAction(self.actions['actual']).setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        bar.addSeparator()
+        self.sampling_action = QAction('Nearest neighbor', self)
+        self.sampling_action.setToolTip('Source image sampling')
+        sampling = QMenu(bar)
+        self.sampling_group = QActionGroup(self); self.sampling_group.setExclusive(True)
+        self.sampling_nearest = sampling.addAction('Nearest neighbor')
+        self.sampling_bilinear = sampling.addAction('Bilinear')
+        for index, action in enumerate((self.sampling_nearest, self.sampling_bilinear)):
+            action.setCheckable(True)
+            self.sampling_group.addAction(action)
+            action.triggered.connect(lambda checked=False, i=index: self.image_sampling.setCurrentIndex(i))
+        self.sampling_action.setMenu(sampling)
+        bar.addAction(self.sampling_action)
+        bar.widgetForAction(self.sampling_action).setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.toolbar_pixel_grid = QAction('Show source pixel grid', self)
+        self.toolbar_pixel_grid.setCheckable(True)
+        self.toolbar_pixel_grid.setToolTip('Show source pixel grid at 800% magnification or greater')
+        bar.addAction(self.toolbar_pixel_grid)
+        self.minimap_toggle = QAction('Show minimap', self)
+        self.minimap_toggle.setCheckable(True); self.minimap_toggle.setChecked(True)
+        self.minimap_toggle.setToolTip('Show minimap when the image is not fully visible')
+        self.minimap_toggle.toggled.connect(self.canvas.set_minimap_enabled)
+        bar.addAction(self.minimap_toggle)
+        spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        bar.addWidget(spacer)
+        bar.addAction(self.actions['focus'])
+
+    def sync_sampling_action(self, *args):
+        index = self.image_sampling.currentIndex()
+        self.sampling_nearest.setChecked(index == 0)
+        self.sampling_bilinear.setChecked(index == 1)
+        self.sampling_action.setText(self.image_sampling.currentText())
 
     def setup_shortcuts(self):
         for key, shortcut in [('open_image', QKeySequence.StandardKey.Open),
@@ -404,6 +459,10 @@ class MainWindow(QMainWindow):
                  'all': 'play', 'fit': 'maximize', 'actual': 'scaling',
                  'focus': 'panels-top-left', 'preferences': 'settings', 'save': 'save'}
         palette = QApplication.palette()
+        self.minimap_toggle.setIcon(icon('map', palette))
+        self.zoom_out.setIcon(icon('zoom-out', palette))
+        self.zoom_in.setIcon(icon('zoom-in', palette))
+        self.toolbar_pixel_grid.setIcon(icon('grid-3x3', palette))
         for key, name in names.items():
             self.actions[key].setIcon(icon(name, palette))
         self.update_action_states()
@@ -532,6 +591,8 @@ class MainWindow(QMainWindow):
         self.actions['overlay'].setEnabled(not capturing and ((result and mapped) or self.overlay.isVisible()))
         self.file_list.setEnabled(not capturing)
         for key in ('fit', 'actual', 'grid'): self.actions[key].setEnabled(image)
+        for widget in (self.zoom_out, self.zoom_in, self.zoom_selector): widget.setEnabled(image)
+        self.sampling_action.setEnabled(image); self.toolbar_pixel_grid.setEnabled(image)
         for key in ('load_yolo', 'load_phase'): self.actions[key].setEnabled(not busy and not capturing)
         self.actions['unload_yolo'].setEnabled(not busy and not capturing and self.pipeline.yolo is not None)
         self.actions['unload_phase'].setEnabled(not busy and not capturing and self.pipeline.phase is not None)
@@ -544,7 +605,24 @@ class MainWindow(QMainWindow):
         widget = QSpinBox(); widget.setRange(low,high); widget.setValue(value); return widget
     def layers(self): return {k:v.isChecked() for k,v in self.layer_widgets.items()}
     def overlay_layers(self): return {k:v.isChecked() for k,v in self.overlay_layer_widgets.items()}
-    def redraw(self, *args): self.canvas.update(); self.overlay.update()
+    def stroke_mode_changed(self, *args):
+        screen = self.stroke_mode.currentData() == 'screen'
+        self.stroke_width.setSuffix(' physical px' if screen else ' source px')
+        self.stroke_width.blockSignals(True)
+        self.stroke_width.setValue(1 if screen else 2)
+        self.stroke_width.blockSignals(False)
+        self.redraw()
+
+    def redraw(self, *args):
+        result = self.result
+        grid = self.selected_grid()
+        layers = self.layers()
+        selected = self.selected_detection()
+        mode = self.heatmap.currentText()
+        tile = self.tile_inspect.value()
+        style = RecognitionStyle(self.stroke_mode.currentData(), self.stroke_width.value(), self.vector_opacity.value() / 100)
+        self.canvas.set_visualization(lambda canvas, magnification: draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile, style, magnification))
+        self.overlay.update()
     def change_opacity(self, value): self.overlay.setWindowOpacity(value)
     def selected_detection(self):
         item = self.grid_list.currentItem()
@@ -552,7 +630,7 @@ class MainWindow(QMainWindow):
     def selected_grid(self):
         if not self.result: return None
         return next ( (g for g in self.result.grids if g.detection_index == self.selected_detection()), None)
-    def actual_size(self): self.canvas.scale=1. / self.canvas.devicePixelRatioF(); self.canvas.offset=[0.,0.]; self.canvas.update(); self.update_zoom_status()
+    def actual_size(self): self.canvas.actual_size()
     def choose_path(self, field):
         path, _ = QFileDialog.getOpenFileName(self, 'Choose file', field.text())
         if path: field.setText(path)
@@ -563,8 +641,8 @@ class MainWindow(QMainWindow):
         except Exception as exc: self.diagnostics.setPlainText(f'Monitor enumeration failed: {exc}')
     def set_frame(self, frame):
         self.generation += 1; self.overlay.hide(); self.frame = frame; self.result = None
-        self.image_skia = skia_image(frame.image); self.grid_list.clear(); self.show_diagnostics()
-        self.workspace.setCurrentWidget(self.canvas); self.canvas.fit()
+        self.canvas.set_image(frame.image); self.grid_list.clear(); self.show_diagnostics()
+        self.workspace.setCurrentWidget(self.viewer_container); self.canvas.fit()
         self.image_status.setText(f'Image: {frame.image.width} × {frame.image.height}'); self.cursor_status.setText('Cursor: —')
         self.update_empty_states(); self.update_action_states()
     def open_image(self):
