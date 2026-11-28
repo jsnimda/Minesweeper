@@ -1,6 +1,8 @@
 """Focused Phase D infrastructure checks; all fixtures are synthetic and small."""
 import json
 import math
+from pathlib import Path
+import tomllib
 from types import SimpleNamespace
 
 import numpy as np
@@ -58,7 +60,7 @@ def test_positive_without_phase_supervision():
 
 def test_geometry_categorization():
     result = SimpleNamespace(status='insufficient_evidence', hypotheses=(), reasons=('no support',))
-    records = [geometry_record({'sample_id':'a','geometry':{},'complete':False},result,None), geometry_record({'sample_id':'b','geometry':None},result,None)]
+    records = [geometry_record({'sample_id':'a','geometry':{'origin_x': 0, 'origin_y': 0, 'pitch_x': 8, 'pitch_y': 8, 'visible_box': [0, 0, 24, 24]}, 'board_dimensions': [3, 3], 'known_box': [0, 0, 24, 24], 'complete':False},result,None), geometry_record({'sample_id':'b','geometry':None},result,None)]
     summary = summarize(records)
     assert summary['false_rejection_positive_rate'] == 1 and summary['false_acceptance_negative_rate'] == 0
     assert summary['correct_among_accepted_positive'] is None
@@ -144,6 +146,23 @@ def test_epoch_extension_resume_counter_and_learning_rate(tmp_path, monkeypatch,
     assert history[-1]['learning_rate'] == pytest.approx(.00025)
 
 
+def test_training_scheduler_defaults_and_alternatives():
+    config = Config('data', 'run')
+    assert (config.scheduler, config.epochs, config.learning_rate,
+            config.cosine_t_max, config.cosine_eta_min) == ('cosine', 50, .001, 50, .00001)
+    assert Config('data', 'run', scheduler='none').scheduler == 'none'
+    step = Config('data', 'run', scheduler='step')
+    assert (step.scheduler, step.step_size, step.gamma) == ('step', 10, .5)
+
+
+def test_standalone_development_schedule():
+    path = Path(__file__).resolve().parents[1] / 'configs' / 'phase_baseline.toml'
+    with path.open('rb') as stream:
+        config = Config(**tomllib.load(stream))
+    assert (config.epochs, config.scheduler, config.cosine_t_max,
+            config.learning_rate, config.cosine_eta_min, config.batch_size) == (50, 'cosine', 50, .001, .00001, 8)
+
+
 def test_cosine_configuration_validation():
     from dataclasses import replace
     config = Config('data', 'run', scheduler='cosine')
@@ -206,6 +225,8 @@ def test_resume_old_config_without_cosine_fields(tmp_path, monkeypatch, schedule
         train(replace(config, epochs=2, learning_rate=.002), resume=True)
     with pytest.raises(ValueError, match='resume configuration differs'):
         train(replace(config, epochs=2, cosine_t_max=10), resume=True)
+    with pytest.raises(ValueError, match='resume configuration differs'):
+        train(replace(config, epochs=2, scheduler='cosine'), resume=True)
     fake_epochs(monkeypatch, [1.])
     history = train(replace(config, epochs=2), resume=True)
     assert history[-1]['learning_rate'] == pytest.approx(.0005 if scheduler == 'step' else .001)

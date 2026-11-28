@@ -124,8 +124,6 @@ class GenerationConfig:
     anisotropic_fraction: float = .10
     anisotropic_max: float = .05
     transition_ratio: float = .25
-    padding_example_fraction: float = .05
-    padding_max_fraction: float = .20
     context_weights: dict = field(default_factory=lambda: dict(CONTEXT_WEIGHTS))
     coverage_exploration_fraction: float = .12
     coverage_preference_exponent: float = 1.5
@@ -158,7 +156,6 @@ class GenerationConfig:
             raise ValueError('input dimensions must be positive multiples of eight')
         if not (0 <= self.negative_fraction <= 1 and 0 <= self.anisotropic_fraction <= 1
                 and 0 <= self.anisotropic_max <= .2 and math.isfinite(self.transition_ratio) and self.transition_ratio > 0
-                and 0 <= self.padding_example_fraction <= 1 and 0 < self.padding_max_fraction <= .4
                 and 0 <= self.coverage_exploration_fraction <= 1
                 and 0 <= self.desktop_fraction <= 1 and math.isfinite(self.coverage_preference_exponent)
                 and 0 <= self.coverage_preference_exponent <= 5):

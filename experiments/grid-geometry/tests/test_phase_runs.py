@@ -1,9 +1,28 @@
+import ast
 import json
+from pathlib import Path
 
 import pytest
 
 from grid_geometry.phase import runs
 from grid_geometry.phase.model import MODEL_ID, REPRESENTATION_ID
+
+
+def test_training_notebook_scheduler_presets():
+    notebook = json.loads((Path(__file__).resolve().parents[1] / 'notebooks' / '02_train.ipynb').read_text())
+    cell = next(''.join(cell['source']) for cell in notebook['cells']
+                if cell['cell_type'] == 'code' and 'presets = {' in ''.join(cell['source']))
+    tree = ast.parse(cell)
+    assignments = {node.targets[0].id: node.value for node in tree.body
+                   if isinstance(node, ast.Assign) and len(node.targets) == 1
+                   and isinstance(node.targets[0], ast.Name)}
+    assert ast.literal_eval(assignments['PRESET']) == 'smoke'
+    presets = ast.literal_eval(assignments['presets'])
+    assert (presets['smoke']['epochs'], presets['smoke']['cosine_t_max']) == (2, 2)
+    assert (presets['development']['epochs'], presets['development']['cosine_t_max']) == (50, 50)
+    options = {item.arg: ast.literal_eval(item.value) for item in assignments['training'].keywords
+               if item.arg in ('scheduler', 'learning_rate', 'cosine_eta_min')}
+    assert options == {'scheduler': 'cosine', 'learning_rate': .001, 'cosine_eta_min': .00001}
 
 
 def test_training_config_and_fresh_run_preflight(tmp_path, monkeypatch):

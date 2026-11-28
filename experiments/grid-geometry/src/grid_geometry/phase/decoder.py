@@ -50,6 +50,12 @@ class DecoderSettings:
 
 @dataclass(frozen=True)
 class AxisExtent:
+    """Lattice-aligned local extent, plus independent termination evidence.
+
+    ``origin`` and ``end`` are equivalent boundaries, and can lie outside the
+    image. Visible coordinates are occupancy crossings, not lattice lines.
+    Censored sides do not establish a physical board termination.
+    """
     origin: float
     pitch: float
     count: int
@@ -194,23 +200,22 @@ def _profile_extent(profile, threshold):
 def _axis_extent(candidate, profile_extent, length):
     start, end, start_censored, end_censored, _ = profile_extent
     pitch, phase = candidate.pitch, candidate.origin_mod_pitch
-    # A censored edge indicates only the lattice cells intersecting the image;
-    # it is never represented as an observed board termination.
-    if start_censored:
-        first = math.floor((0 - phase) / pitch)
-    else:
-        first = round((start - phase) / pitch)
-    if end_censored:
-        last = math.ceil((length - phase) / pitch)
-    else:
-        last = round((end - phase) / pitch)
+    # Snap occupancy crossings for observed terminations and image edges for
+    # censored sides. Exact half-cell ties choose the greater lattice index.
+    # Do not clamp: the closest line can be outside the observed image.
+    first = math.floor(((0 if start_censored else start) - phase) / pitch + .5)
+    last = math.floor(((length if end_censored else end) - phase) / pitch + .5)
     if last <= first:
         return None
     return AxisExtent(phase + first * pitch, pitch, last - first, start, end, start_censored, end_censored)
 
 
 def decode_phase(fields, settings: DecoderSettings = DecoderSettings()):
-    """Return ranked finite proposals and diagnostics without validation or repair."""
+    """Decode the known image rectangle, excluding any inference padding.
+
+    Callers with padded inputs must crop to the known rectangle first and
+    translate the resulting coordinates back if needed.
+    """
     started = perf_counter()
     values = _fields(fields)
     timings = {}

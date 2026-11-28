@@ -10,13 +10,15 @@ def recognition_counts(records):
     local_tp = sum(bool(r['local_accepted'] and r['local_correct'] is True) for r in positives)
     complete_tp = sum(bool(r['global']['accepted'] and r['global']['correct'] is True) for r in complete)
     return {
-        'Local geometry precision': (local_tp, sum(bool(r['local_accepted']) for r in records)),
-        'Local geometry recall': (local_tp, len(positives)),
+        'Local lattice precision': (local_tp, sum(bool(r['local_accepted']) for r in records)),
+        'Local lattice recall': (local_tp, len(positives)),
         'Complete board precision': (complete_tp, sum(bool(r['global']['accepted']) for r in records)),
         'Complete board recall': (complete_tp, len(complete)),
         'Partial board false acceptance rate': (sum(bool(r['global']['accepted']) for r in partial), len(partial)),
         'Negative false acceptance rate': (sum(bool(r['global']['accepted']) for r in negative), len(negative)),
-    }
+    } | ({'Local geometry precision': (sum(bool(r['local_accepted'] and r['local_geometry_correct'] is True) for r in positives), sum(bool(r['local_accepted']) for r in records)),
+          'Local geometry recall': (sum(bool(r['local_accepted'] and r['local_geometry_correct'] is True) for r in positives), len(positives))}
+         if all('local_geometry_correct' in r for r in positives) else {})
 
 
 def outcome_matrix(records):

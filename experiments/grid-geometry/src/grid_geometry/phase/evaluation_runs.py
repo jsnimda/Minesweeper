@@ -2,7 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from grid_geometry.phase.evaluate import evaluate
+from grid_geometry.phase.evaluate import REPORT_VERSION, evaluate
 from grid_geometry.phase.train import dataset_identity
 from grid_geometry.training import select_device
 
@@ -43,20 +43,22 @@ def evaluate_run(run, *, device, limit=None, seed=42):
     reports = {}
     for split in ("val", "test"):
         destination = evaluation_root / split
-        expected = {"schema": 2, "checkpoint_sha256": file_hash(best_path),
+        expected = {"schema": 3, "checkpoint_sha256": file_hash(best_path),
                     "dataset_root": str(saved_root), "dataset_identity": dataset_identity(saved_root),
                     "inventory": inventory([p for p in (saved_root / split).glob("*") if p.suffix in (".png", ".json")], saved_root),
                     "split": split, "limit": limit, "seed": seed,
                     "device": str(select_device(device)), "global_geometry": True,
                     "evaluator_sha256": file_hash(Path(__file__).with_name("evaluate.py")),
-                    "metrics_sha256": file_hash(Path(__file__).with_name("metrics.py"))}
+                    "metrics_sha256": file_hash(Path(__file__).with_name("metrics.py")),
+                    "equivalent_boundaries_sha256": file_hash(Path(__file__).parents[1] / "dataset" / "equivalent_boundaries.py")}
         if destination.exists():
             report = read_completed(destination, expected, ("records", "sample_ids", "target_metrics", "geometry", "global_geometry_single_crop"))
-            if (report.get("split") != split or not isinstance(report["records"], list)
+            if (report.get("report_version") != REPORT_VERSION or report.get("split") != split or not isinstance(report["records"], list)
                     or not isinstance(report["sample_ids"], list)
                     or not all(k in report.get("target_metrics", {}).get("all", {}).get("occupancy_confusion", {}) for k in ("tp", "fp", "fn", "tn"))
                     or len(report["records"]) != len(report["sample_ids"])
-                    or any(not isinstance(r, dict) or "global" not in r or "local_accepted" not in r["global"] for r in report["records"])):
+                    or any(not isinstance(r, dict) or "global" not in r or "local_accepted" not in r["global"]
+                           or (r.get("positive") and "equivalent_boundaries" not in r) for r in report["records"])):
                 raise ValueError(f"Incomplete evaluation report at {destination}; preserve it by moving the directory elsewhere before rerunning")
             print(f"Loaded evaluation: {destination}")
         else:

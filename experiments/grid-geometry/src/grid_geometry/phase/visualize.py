@@ -2,9 +2,8 @@
 import numpy as np
 import torch
 
-from .decoder import decode_phase
 from .model import phase_predictions
-from .validation import validate_phase
+from .evaluate import boundary_record, local_recognition
 
 
 def plot_history(history):
@@ -24,15 +23,21 @@ def plot_sample(model, sample, device='cpu'):
     with torch.inference_mode():
         pred = phase_predictions(model(sample.image[None].to(device)))[0].cpu().numpy()
     target = sample.targets.numpy(); mask = sample.phase_mask.numpy()
-    decoded = decode_phase(pred)
-    validation = validate_phase(pred, decoded.hypotheses[0], decoder_status=decoded.status) if decoded.hypotheses else None
+    decoded, validation = local_recognition(sample.metadata, pred)
     fig, axes = plt.subplots(3, 4, figsize=(16, 11))
     axes[0, 0].imshow(sample.image.permute(1,2,0)); axes[0,0].set_title('Image and geometry')
     g = sample.metadata.get('geometry')
     if g:
         l,t,r,b = g['visible_box']; axes[0,0].add_patch(Rectangle((l,t),r-l,b-t, fill=False, edgecolor='lime', label='ground truth'))
+        sides = boundary_record(sample.metadata, decoded.hypotheses[0] if decoded.hypotheses else None)['sides']
+        for name, side in sides.items():
+            for coordinate in side['targets']:
+                draw = axes[0, 0].axvline if name in ('left', 'right') else axes[0, 0].axhline
+                draw(coordinate, color='cyan', linestyle=':', linewidth=1, label='GT equivalent lines' if name == 'left' and coordinate == side['targets'][0] else None)
     if decoded.hypotheses:
-        h=decoded.hypotheses[0]; axes[0,0].add_patch(Rectangle((h.x.origin,h.y.origin),h.x.end-h.x.origin,h.y.end-h.y.origin,fill=False,edgecolor='red',label='decoded ideal')); axes[0,0].legend()
+        h=decoded.hypotheses[0]; axes[0,0].add_patch(Rectangle((h.x.origin,h.y.origin),h.x.end-h.x.origin,h.y.end-h.y.origin,fill=False,edgecolor='red',label='decoded equivalent extent'))
+    axes[0,0].set_xlim(0, sample.image.shape[2]); axes[0,0].set_ylim(sample.image.shape[1], 0)
+    if g or decoded.hypotheses: axes[0,0].legend()
     panels = [(target[0], 'GT x cosine', -1, 1, 'coolwarm'),
               (pred[0], 'Pred x cosine', -1, 1, 'coolwarm'),
               (target[2], 'GT y cosine', -1, 1, 'coolwarm'),

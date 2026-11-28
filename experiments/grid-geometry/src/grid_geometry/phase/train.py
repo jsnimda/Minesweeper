@@ -42,11 +42,11 @@ class Config:
     output_dir: str
     batch_size: int = 8
     workers: int = 0
-    epochs: int = 30
+    epochs: int = 50
     optimizer: str = 'adamw'
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
-    scheduler: str = 'none'
+    scheduler: str = 'cosine'
     step_size: int = 10
     gamma: float = 0.5
     cosine_t_max: int = 50

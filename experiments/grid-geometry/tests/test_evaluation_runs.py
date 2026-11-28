@@ -17,7 +17,7 @@ def evaluation_run(tmp_path, monkeypatch):
     calls = []
     def evaluate(checkpoint, root, *, split, output, **kwargs):
         calls.append(split)
-        report = {"split": split, "records": [{"global": {"local_accepted": False}}], "sample_ids": ["one"],
+        report = {"report_version": evaluation_runs.REPORT_VERSION, "split": split, "records": [{"global": {"local_accepted": False}}], "sample_ids": ["one"],
                   "target_metrics": {"all": {"occupancy_confusion": {"tp": 0, "fp": 0, "fn": 0, "tn": 0}}}, "geometry": {}, "global_geometry_single_crop": {}}
         output.write_text(json.dumps(report))
         return report
@@ -35,6 +35,18 @@ def test_reuse_and_reject_changed_identity(evaluation_run):
     assert calls == ["val", "test"]
     with pytest.raises(ValueError, match="incompatible"):
         evaluation_runs.evaluate_run(run, device="cpu", seed=43)
+    assert calls == ["val", "test"]
+
+
+def test_previous_evaluator_fingerprint_is_rejected(evaluation_run):
+    run, calls = evaluation_run
+    evaluation_runs.evaluate_run(run, device="cpu")
+    path = run.directory / "evaluation" / "val" / "metadata.json"
+    metadata = json.loads(path.read_text())
+    metadata["settings"]["evaluator_sha256"] = "previous implementation"
+    path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="incompatible"):
+        evaluation_runs.evaluate_run(run, device="cpu")
     assert calls == ["val", "test"]
 
 
@@ -73,4 +85,22 @@ def test_legacy_schema_is_preserved_and_rejected(evaluation_run):
     with pytest.raises(ValueError, match="moving it elsewhere"):
         evaluation_runs.evaluate_run(run, device="cpu")
     assert json.loads(path.read_text())["settings"]["schema"] == 1
+    assert calls == ["val", "test"]
+
+
+def test_outdated_report_version_is_preserved_and_rejected(evaluation_run):
+    run, calls = evaluation_run
+    evaluation_runs.evaluate_run(run, device="cpu")
+    directory = run.directory / "evaluation" / "val"
+    path = directory / "report.json"
+    report = json.loads(path.read_text())
+    report.pop("report_version")
+    path.write_text(json.dumps(report))
+    metadata_path = directory / "metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["report_sha256"] = evaluation_runs.file_hash(path)
+    metadata_path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="Incomplete"):
+        evaluation_runs.evaluate_run(run, device="cpu")
+    assert "report_version" not in json.loads(path.read_text())
     assert calls == ["val", "test"]

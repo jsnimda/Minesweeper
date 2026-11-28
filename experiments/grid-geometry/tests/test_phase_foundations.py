@@ -41,7 +41,14 @@ def test_crop_masks_and_transform():
     visible[5:7, 5:7] = False
     target, mask, occ_mask = phase_targets((16, 16), original, known_mask=known, visible_mask=visible)
     assert np.all(target[4] == 1)
-    assert not mask[5, 5] and not occ_mask[0, 0]
+    unmasked, _, _ = phase_targets((16, 16), original)
+    np.testing.assert_array_equal(target, unmasked)
+    np.testing.assert_array_equal(mask, known & visible)
+    np.testing.assert_array_equal(occ_mask, known)
+    assert not mask[5, 5] and occ_mask[5, 5] and not occ_mask[0, 0]
+    negative, negative_phase, negative_occupancy = phase_targets((16, 16), None, known_mask=known)
+    assert not negative.any() and not negative_phase.any()
+    np.testing.assert_array_equal(negative_occupancy, known)
     transformed = original.transformed(2, 3, 4, 5)
     assert transformed.origin_x == -36 and transformed.pitch_y == 37.5
     negative, mask, _ = phase_targets((16, 16), None)

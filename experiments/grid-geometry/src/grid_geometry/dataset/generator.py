@@ -29,14 +29,12 @@ from .statistics import AcceptedStatistics
 from synthetic_scenes.attempt_statistics import AttemptCounters, NOT_APPLICABLE, board_factors, fixed_bucket, summaries
 from synthetic_scenes.dataset_statistics import BINS
 
-GENERATOR_REVISION = 1
+GENERATOR_REVISION = 2
 STANDALONE_MINIMUM_CELL_SIZE = 12
 NEGATIVE_KINDS = ('negative', 'hard_negative')
 RESAMPLING_METHODS = (Image.Resampling.BILINEAR, Image.Resampling.BICUBIC)
 BLUR_CHOICES = (0., 0., 0., .25, .5)
 PHOTOMETRIC_RANGE = (.95, 1.05)
-PADDING_TYPES = ('black', 'dark', 'light', 'random')
-PADDING_WEIGHTS = (5, 2, 2, 1)
 FILL_APPLICATIONS = ('browser', 'spreadsheet', 'sudoku', 'other_puzzle')
 FILL_DISPLAY_SCALE = 1.0
 
@@ -124,8 +122,8 @@ def _pitch_bin(pitch, bins):
 def sample_fractions(size, known_box, geometry, transition_ratio):
     """Exact pixel-center coverage and soft-occupancy sums using 1-D arrays.
 
-    Fractions use all image pixels as denominator. Padding is unknown, and
-    occupancy outside known pixels contributes zero to the reported sum.
+    Fractions use all image pixels as denominator; occupancy outside known
+    pixels contributes zero to the reported sum.
     """
     width, height = size
     x = np.arange(width, dtype=np.float32) + .5
@@ -134,10 +132,9 @@ def sample_fractions(size, known_box, geometry, transition_ratio):
     x = x[(x >= left) & (x < right)]
     y = y[(y >= top) & (y < bottom)]
     total = width * height
-    padding = 1. - (x.size * y.size) / total
     if geometry is None:
         return {'phase_supervision_fraction': None, 'grid_coverage_fraction': None,
-                'grid_occupancy_fraction': 0., 'padding_fraction': padding}
+                'grid_occupancy_fraction': 0.}
     left, top, right, bottom = geometry.visible_box
     dx = np.minimum(x - left, right - x) / geometry.pitch_x
     dy = np.minimum(y - top, bottom - y) / geometry.pitch_y
@@ -151,18 +148,16 @@ def sample_fractions(size, known_box, geometry, transition_ratio):
     occupancy_sum = np.sum(prefix[positions] + (fx.size - positions) * fy)
     coverage = inside / total
     return {'phase_supervision_fraction': coverage, 'grid_coverage_fraction': coverage,
-            'grid_occupancy_fraction': float(occupancy_sum / total), 'padding_fraction': padding}
+            'grid_occupancy_fraction': float(occupancy_sum / total)}
 
 
 def summarize_fractions(records):
     """Summarize compact per-sample fractions, including empty groups."""
     def summarize(group):
         positives = [r for r in group if r['grid_coverage_fraction'] is not None]
-        result = {'samples': len(group), 'positive_samples': len(positives),
-                  'samples_with_padding': sum(r['padding_fraction'] > 0 for r in group),
-                  'fraction_with_padding': sum(r['padding_fraction'] > 0 for r in group) / len(group) if group else None}
-        for name in ('grid_coverage_fraction', 'phase_supervision_fraction', 'grid_occupancy_fraction', 'padding_fraction'):
-            values = [r[name] for r in (group if name == 'padding_fraction' else positives)]
+        result = {'samples': len(group), 'positive_samples': len(positives)}
+        for name in ('grid_coverage_fraction', 'phase_supervision_fraction', 'grid_occupancy_fraction'):
+            values = [r[name] for r in positives]
             result[name + '_quantiles'] = dict(zip(('min', 'p05', 'p25', 'median', 'p75', 'p95', 'max'),
                 (float(v) for v in np.quantile(values, [0, .05, .25, .5, .75, .95, 1])))) if values else None
         result['positive_fraction_below_coverage'] = {
@@ -216,7 +211,6 @@ def _source_policy(config):
         'hard_negative_applications_uniform': source_sampler.HARD_NEGATIVE_APPLICATIONS,
         'fill': {'desktop_appearance': config.desktop_appearance, 'display_scale': FILL_DISPLAY_SCALE,
                  'desktop_size': 'output size with renderer minimum 320x240', 'applications_uniform': FILL_APPLICATIONS},
-        'padding_type_choices': PADDING_TYPES, 'padding_type_weights': PADDING_WEIGHTS,
         'augmentation': {'resampling_uniform': tuple(method.name for method in RESAMPLING_METHODS),
                          'blur_choices': BLUR_CHOICES, 'brightness_range': PHOTOMETRIC_RANGE,
                          'contrast_range': PHOTOMETRIC_RANGE, 'jpeg': None},
@@ -414,31 +408,8 @@ def _generate_one(task):
     contrast = augmentation_rng.uniform(*PHOTOMETRIC_RANGE)
     from synthetic_scenes.augmentation import adjust_image
     image = adjust_image(image, blur=blur, brightness=brightness, contrast=contrast)
-    # Rendered surroundings are known background. Intentional padding is
-    # applied after all image transforms and excluded by the existing mask.
-    padding_rng = random.Random(f'{seed}:{split}:{index}:{attempt}:padding')
+    # Rendered surroundings are known background.
     known_box = (0, 0, width, height)
-    padding_type = None
-    padding_side = None
-    padding_color = None
-    padding_extent = 0
-    if padding_rng.random() < config['padding_example_fraction']:
-        padding_side = padding_rng.choice(('left', 'right', 'top', 'bottom'))
-        padding_type = padding_rng.choices(PADDING_TYPES, PADDING_WEIGHTS)[0]
-        color = {'black': (0, 0, 0), 'dark': (36, 36, 36), 'light': (220, 220, 220),
-                 'random': tuple(padding_rng.randrange(256) for _ in range(3))}[padding_type]
-        padding_color = color
-        from PIL import ImageDraw
-        if padding_side in ('left', 'right'):
-            amount = padding_rng.randint(1, max(1, int(width * config['padding_max_fraction'])))
-            rect = (0, 0, amount, height) if padding_side == 'left' else (width - amount, 0, width, height)
-            known_box = (amount, 0, width, height) if padding_side == 'left' else (0, 0, width - amount, height)
-        else:
-            amount = padding_rng.randint(1, max(1, int(height * config['padding_max_fraction'])))
-            rect = (0, 0, width, amount) if padding_side == 'top' else (0, height - amount, width, height)
-            known_box = (0, amount, width, height) if padding_side == 'top' else (0, 0, width, height - amount)
-        padding_extent = amount
-        ImageDraw.Draw(image).rectangle((rect[0], rect[1], rect[2] - 1, rect[3] - 1), fill=color)
     geometry_dict = asdict(target_geometry) if target_geometry is not None else None
     requested_bin = f'{low:g}-{high:g}'
     if board:
@@ -485,10 +456,6 @@ def _generate_one(task):
                 'context_type': context_type if background_visible else ('source_desktop' if request['mode'] == 'desktop' else 'source_game'),
                 'requested_context': requested_context,
                 'background_visible': background_visible, 'context_subtype': context_subtype,
-                'intentional_padding_requested': padding_type is not None,
-                'accidental_padding_fraction': 0.,
-                'padding_type': padding_type, 'padding_side': padding_side,
-                'padding_extent': padding_extent, 'padding_color': padding_color,
                 'scene_mode': request['mode'],
                 'negative_source': request['windows'][0]['type'] if negative else None,
                 'augmentation': {'resampling': resampling.name, 'blur': blur, 'brightness': brightness, 'contrast': contrast},
@@ -569,9 +536,8 @@ def generate_dataset(destination, config=GenerationConfig()):
                 base = {'root': str(root), 'config': settings, 'split': split, 'excluded_path': str(exclusion),
                         'collect_attempt_diagnostics': True}
                 tasks = ({**base, 'index': index} for index in range(count))
-                group = {key: Counter() for key in ('category', 'style', 'requested_pitch_bin', 'actual_pitch_bin_x', 'actual_pitch_bin_y', 'board_dimensions', 'visibility', 'negative_source', 'game_progress_category', 'context_type', 'requested_context', 'padding_type')}
+                group = {key: Counter() for key in ('category', 'style', 'requested_pitch_bin', 'actual_pitch_bin_x', 'actual_pitch_bin_y', 'board_dimensions', 'visibility', 'negative_source', 'game_progress_category', 'context_type', 'requested_context')}
                 identities = set(); retries = Counter(); samples = 0
-                padding_counts = Counter()
                 fraction_records = []
                 start_split = perf_counter()
                 bar_context = tqdm(total=count, desc=split, unit='sample') if config.progress and count else nullcontext(None)
@@ -580,12 +546,7 @@ def generate_dataset(destination, config=GenerationConfig()):
                         record = worker_result['record']
                         accepted.add(record)
                         fraction_records.append({key: record[key] for key in ('category', 'actual_pitch_bin_x',
-                            'grid_coverage_fraction', 'phase_supervision_fraction', 'grid_occupancy_fraction', 'padding_fraction')})
-                        padding_counts['requested'] += record['intentional_padding_requested']
-                        padding_counts['realized'] += record['padding_type'] is not None
-                        kind = 'positive' if record['board_id'] else 'negative'
-                        padding_counts[kind + '_samples'] += 1
-                        padding_counts[kind + '_padded'] += record['padding_type'] is not None
+                            'grid_coverage_fraction', 'phase_supervision_fraction', 'grid_occupancy_fraction')})
                         board_id = record['board_id']
                         if board_id is not None:
                             if board_id in all_ids:
@@ -608,11 +569,6 @@ def generate_dataset(destination, config=GenerationConfig()):
                     'negative': group['category']['negative'] + group['category']['hard_negative'],
                     'complete': group['category']['complete'], 'partial': sum(group['category'][k] for k in ('interior', 'side', 'corner')),
                     **{key: dict(value) for key, value in group.items()}, 'unique_board_ids': len(identities),
-                    'padding': {**dict(padding_counts), 'requested_probability': config.padding_example_fraction,
-                        'realized_rate': padding_counts['realized'] / samples if samples else None,
-                        'positive_rate': padding_counts['positive_padded'] / padding_counts['positive_samples'] if padding_counts['positive_samples'] else None,
-                        'negative_rate': padding_counts['negative_padded'] / padding_counts['negative_samples'] if padding_counts['negative_samples'] else None,
-                        'accidental_samples': 0},
                     'retries': dict(retries), 'sampling_fractions': summarize_fractions(fraction_records), 'duration_seconds': elapsed, 'samples_per_second': samples / elapsed if elapsed else 0.}
     sample_seconds = perf_counter() - started
     final_started = perf_counter()

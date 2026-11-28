@@ -16,7 +16,7 @@ def validate_saved_dataset(root):
             raise FileNotFoundError(root / name)
     metadata = json.loads((root / "config.json").read_text())
     for key, expected in {"experiment": "grid-geometry", "generator": "phase-grid-v1",
-                          "generator_revision": 1, "status": "complete"}.items():
+                          "generator_revision": 2, "status": "complete"}.items():
         if metadata.get(key) != expected or (key == "generator_revision" and type(metadata.get(key)) is not int):
             raise ValueError(f"Dataset {key}: expected {expected!r}, got {metadata.get(key)!r}")
     return metadata
