@@ -40,6 +40,14 @@ def test_empty_and_repeated_detection_presentation():
                for item, data in zip(items, state.snapshot.result.detections))
 
 
+def test_missing_global_decoder_status_is_not_invented():
+    grid = geometry(0, validation(False, object()))
+    grid.decoding = None
+    state = RecognitionSelection(); state.replace(RecognitionResult([detection('grid')], [grid]))
+    summary = explorer_items(state.snapshot)[0].children[0].summary
+    assert summary == 'Rejected · extent unavailable'
+
+
 def test_geometry_status_children_and_unassociated_result():
     lattice = object()
     extent = SimpleNamespace(rows=16, columns=30)

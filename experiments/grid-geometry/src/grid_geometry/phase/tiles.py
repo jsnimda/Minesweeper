@@ -8,6 +8,7 @@ import numpy as np
 
 from .decoder import decode_phase
 from .validation import validate_phase
+from ..preprocessing import ImageTransform
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,35 @@ class TileObservation:
     local_valid: bool
     reasons: tuple[str, ...] = ()
     fields: np.ndarray | None = None
+    # Optional execution artifacts. input_array is the actual CPU-side CHW
+    # model input; its representation is determined by the prediction callback.
+    # full_fields includes padding and fields is its valid view. input_transform
+    # maps the observation source rectangle to the model canvas.
+    input_array: np.ndarray | None = None
+    input_transform: ImageTransform | None = None
+    full_fields: np.ndarray | None = None
+    decoding: object | None = None
+    local_validation: object | None = None
+    input_representation: str | None = None
+    resize_method: str | None = None
+
+    @property
+    def known_box(self):
+        """Real image rectangle in model-canvas coordinates, or unavailable."""
+        if self.input_transform is None:
+            return None
+        x, y = self.input_transform.offset
+        width, height = self.input_transform.resized_size
+        return x, y, x + width, y + height
+
+    @property
+    def padding(self):
+        """Left, top, right, bottom canvas padding, or unavailable."""
+        box = self.known_box
+        if box is None:
+            return None
+        width, height = self.input_transform.canvas_size
+        return box[0], box[1], width - box[2], height - box[3]
 
 
 @dataclass(frozen=True)
@@ -47,11 +77,13 @@ def tile_starts(length, tile, overlap):
     return starts
 
 
-def observe_tiles(rgb, tile, overlap, predict):
+def observe_tiles(rgb, tile, overlap, predict, *, retain_artifacts=False, input_representation=None):
     """Decode each tile independently; ``predict`` returns activated fields.
 
     Right/bottom padding is discarded before decoding, so it cannot supply
-    evidence for a physical termination.
+    evidence for a physical termination. With retain_artifacts, predict returns
+    (activated fields, actual CPU input array); otherwise it returns fields as
+    before. Retention is opt-in for existing experiment consumers.
     """
     image = np.asarray(rgb)
     if image.ndim != 3 or image.shape[2] != 3 or min(image.shape[:2]) < 2:
@@ -65,12 +97,21 @@ def observe_tiles(rgb, tile, overlap, predict):
             th, tw = part.shape[:2]
             padded = np.zeros((tile, tile, 3), dtype=image.dtype)
             padded[:th, :tw] = part
-            fields = predict(padded)[:, :th, :tw]
+            prediction = predict(padded)
+            full_fields, input_array = prediction if retain_artifacts else (prediction, None)
+            fields = full_fields[:, :th, :tw]
             decoded = decode_phase(fields)
             checked = validate_phase(fields, decoded.hypotheses[0], decoder_status=decoded.status) if decoded.hypotheses else None
             observations.append(TileObservation((x, y, x+tw, y+th), decoded.hypotheses[0] if decoded.hypotheses else None,
                                                 bool(checked and checked.local_accepted),
-                                                checked.local_reasons if checked else decoded.reasons, fields))
+                                                checked.local_reasons if checked else decoded.reasons, fields,
+                                                input_array=input_array,
+                                                input_transform=ImageTransform((tw, th), (tw, th), (tile, tile), (0, 0)) if retain_artifacts else None,
+                                                full_fields=full_fields if retain_artifacts else None,
+                                                decoding=decoded if retain_artifacts else None,
+                                                local_validation=checked if retain_artifacts else None,
+                                                input_representation=input_representation if retain_artifacts else None,
+                                                resize_method='none' if retain_artifacts else None))
     return observations, (len(xs), len(ys))
 
 

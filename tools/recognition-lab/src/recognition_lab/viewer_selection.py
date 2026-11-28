@@ -44,6 +44,30 @@ def geometry_extent(grid):
     return None
 
 
+def observation_source_bounds(grid, observation):
+    """Map the known observation rectangle from crop space to screenshot pixels."""
+    box = getattr(observation, 'box', None)
+    transform = grid.heatmap_transform
+    if box is None or transform is None:
+        return None
+    try:
+        x0, y0, x1, y1 = box
+        a = observation_to_source(grid, observation, 0, 0)
+        b = observation_to_source(grid, observation, x1-x0, y1-y0)
+        return valid_bounds((*a, *b))
+    except (AttributeError, TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def observation_to_source(grid, observation, x, y):
+    """Map decoder-local coordinates through the actual crop transform."""
+    tr = grid.heatmap_transform
+    left, top = grid.crop.box[:2]
+    ox, oy = observation.box[:2]
+    return (left + (ox + x - tr.offset[0])/tr.scale_x,
+            top + (oy + y - tr.offset[1])/tr.scale_y)
+
+
 def selection_region(snapshot, identity, layers=None):
     """Return screenshot bounds, optionally requiring a corresponding visible layer."""
     if snapshot is None or snapshot.node(identity) is None:
@@ -55,6 +79,10 @@ def selection_region(snapshot, identity, layers=None):
     grid = snapshot.grid(identity)
     if grid is None:
         return None
+    if identity.kind in ('observation', 'hypothesis'):
+        if layers is not None and not layers.get('tiles'):
+            return None
+        return observation_source_bounds(grid, snapshot.observation(identity))
     extent = geometry_extent(grid)
     phase = grid.phase_data if isinstance(grid.phase_data, dict) else None
     global_phase = phase.get('global') if phase else None

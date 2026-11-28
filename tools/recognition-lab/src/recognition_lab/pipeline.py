@@ -127,6 +127,7 @@ class Pipeline:
             crop = crop_box(detection.box, image.size, settings.padding)
             patch = image.crop(crop.box)
             canvas, tr = preprocess_image(patch, (384, 384))
+            # Retain the exact unbatched CPU model input: RGB CHW float32 / 255.
             data = np.asarray(canvas, dtype=np.float32).transpose(2, 0, 1).copy() / 255
             tensor = torch.from_numpy(data[None]).to(device)
             if device == 'cuda': torch.cuda.synchronize()
@@ -146,7 +147,10 @@ class Pipeline:
             decoded = decode_phase(fields, DecoderSettings(scale_x=tr.scale_x, scale_y=tr.scale_y))
             local = validate_phase(fields, decoded.hypotheses[0], decoder_status=decoded.status) if decoded.hypotheses else None
             observation = TileObservation((0, 0, rw, rh), decoded.hypotheses[0] if decoded.hypotheses else None,
-                                          bool(local and local.local_accepted), local.local_reasons if local else decoded.reasons, fields)
+                                          bool(local and local.local_accepted), local.local_reasons if local else decoded.reasons, fields,
+                                          input_array=data, input_transform=tr, full_fields=values,
+                                          decoding=decoded, local_validation=local,
+                                          input_representation='RGB CHW float32 divided by 255', resize_method='bilinear')
             validation = recognize_global([observation], (rh, rw))
             processing_ms = (perf_counter() - t) * 1000
             hypotheses = []
@@ -173,7 +177,6 @@ class Pipeline:
     def phase_tiles(self, image, result, settings):
         """Run tiled phase inference and strict global geometry validation."""
         import torch
-        from grid_geometry.phase.decoder import DecodeResult
         from grid_geometry.phase.model import phase_predictions
         from grid_geometry.phase.tiles import observe_tiles
         from grid_geometry.phase.global_geometry import recognize_global
@@ -195,7 +198,10 @@ class Pipeline:
             height, width = rgb.shape[:2]
             forward_ms = [0.0]
             def predict(padded):
-                tensor = torch.from_numpy(padded.transpose(2, 0, 1).copy()).float().div_(255).unsqueeze(0).to(device)
+                # Keep the same normalized CPU storage that feeds the model.
+                input_tensor = torch.from_numpy(padded.transpose(2, 0, 1).copy()).float().div_(255)
+                input_array = input_tensor.numpy()
+                tensor = input_tensor.unsqueeze(0).to(device)
                 if device == 'cuda': torch.cuda.synchronize()
                 if device == 'mps': torch.mps.synchronize()
                 before = perf_counter()
@@ -204,23 +210,23 @@ class Pipeline:
                 if device == 'cuda': torch.cuda.synchronize()
                 if device == 'mps': torch.mps.synchronize()
                 forward_ms[0] += (perf_counter() - before) * 1000
-                return fields
+                return fields, input_array
             t = perf_counter()
-            observations, layout = observe_tiles(rgb, settings.tile, settings.overlap, predict)
+            observations, layout = observe_tiles(rgb, settings.tile, settings.overlap, predict, retain_artifacts=True,
+                                                 input_representation='RGB CHW float32 divided by 255')
             validation = recognize_global(observations, (height, width))
             processing_ms = (perf_counter() - t) * 1000 - forward_ms[0]
             hypotheses = []
             if validation.geometry is not None:
                 hypotheses.append((validation.geometry.x_edges + crop.box[0], validation.geometry.y_edges + crop.box[1], 0.0))
-            decoded = DecodeResult('fitted' if validation.lattice else 'insufficient_evidence', (), reasons=validation.reasons)
             diagnostics = {'mode': 'tiled', 'image dimensions': image.size,
                            'crop dimensions': (width, height), 'tile layout (columns, rows)': layout,
                            'tile count': len(observations), 'local valid tiles': sum(o.local_valid for o in observations),
                            'consensus': validation.lattice, 'terminations (crop coordinates)': validation.boundaries,
                            'support': validation.measurements, 'complete-board validity': validation.accepted}
             transform = ImageTransform((width, height), (width, height), (width, height), (0, 0))
-            output.grids.append(GeometryResult(index, crop, np.zeros((1, 1, 1), dtype=np.float32), transform,
-                                               decoded, validation, hypotheses, {'phase forward ms': forward_ms[0], 'geometry processing ms': processing_ms}, diagnostics,
+            output.grids.append(GeometryResult(index, crop, None, transform,
+                                               None, validation, hypotheses, {'phase forward ms': forward_ms[0], 'geometry processing ms': processing_ms}, diagnostics,
                                                {'global': validation, 'observations': observations}))
         output.timings['geometry wall ms'] = (perf_counter()-start)*1000
         return output

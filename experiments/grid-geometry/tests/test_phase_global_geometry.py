@@ -81,6 +81,54 @@ def test_tile_padding_is_not_observed():
     assert not np.any(weights[:, 18:])
 
 
+def test_tile_artifact_retention_is_optional_and_preserves_global_inputs(monkeypatch):
+    from types import SimpleNamespace
+    from grid_geometry.phase import tiles
+    from grid_geometry.phase.decoder import DecodeResult
+
+    hypothesis = scene(columns=4, rows=4, tile=96)[0][0].hypothesis
+    decoded = DecodeResult('ambiguous', (hypothesis, hypothesis), reasons=('competing frequency hypotheses',))
+    checked = SimpleNamespace(local_accepted=False, local_reasons=('decoder status: ambiguous',))
+    monkeypatch.setattr(tiles, 'decode_phase', lambda fields: decoded)
+    monkeypatch.setattr(tiles, 'validate_phase', lambda fields, h, decoder_status: checked)
+    image = np.zeros((12, 18, 3), np.uint8)
+    full = np.zeros((5, 32, 32), np.float32); full[4] = .7
+    model_input = np.zeros((3, 32, 32), np.float32)
+    ordinary, _ = observe_tiles(image, 32, 8, lambda _: full)
+    retained, _ = observe_tiles(image, 32, 8, lambda _: (full, model_input), retain_artifacts=True)
+    old, new = ordinary[0], retained[0]
+    assert old.input_array is old.full_fields is old.decoding is old.local_validation is None
+    assert old.known_box is old.padding is None
+    assert new.input_array is model_input and new.full_fields is full
+    assert np.shares_memory(new.fields, full)
+    assert new.decoding is decoded and new.local_validation is checked
+    assert new.hypothesis is hypothesis and not new.local_valid and new.reasons == checked.local_reasons
+    assert new.known_box == (0, 0, 18, 12) and new.padding == (0, 0, 14, 20)
+    assert new.input_transform.to_source((4., 3.)).tolist() == [4., 3.]
+    assert old.box == new.box and old.local_valid == new.local_valid and old.reasons == new.reasons
+    np.testing.assert_array_equal(old.fields, new.fields)
+    before, after = recognize_global(ordinary, image.shape[:2]), recognize_global(retained, image.shape[:2])
+    assert before.accepted == after.accepted and before.reasons == after.reasons
+    np.testing.assert_array_equal(before.occupancy, after.occupancy)
+
+
+def test_tile_artifacts_record_missing_validation_without_hypothesis(monkeypatch):
+    from grid_geometry.phase import tiles
+    from grid_geometry.phase.decoder import DecodeResult
+    decoded = DecodeResult('insufficient_evidence', (), reasons=('no evidence',))
+    monkeypatch.setattr(tiles, 'decode_phase', lambda fields: decoded)
+    def unexpected(*args, **kwargs):
+        raise AssertionError('validator must not run without a hypothesis')
+    monkeypatch.setattr(tiles, 'validate_phase', unexpected)
+    observations, _ = observe_tiles(np.zeros((12, 18, 3), np.uint8), 32, 8,
+                                    lambda _: (np.zeros((5, 32, 32), np.float32),
+                                               np.zeros((3, 32, 32), np.float32)),
+                                    retain_artifacts=True)
+    observation = observations[0]
+    assert observation.decoding is decoded and observation.local_validation is None
+    assert observation.hypothesis is None and observation.reasons == decoded.reasons
+
+
 def test_unobservable_conflicting_and_false_exterior():
     observations, shape = scene()
     no_left = [replace(o, hypothesis=replace(o.hypothesis, x=replace(o.hypothesis.x, start_censored=True, visible_start=None)))

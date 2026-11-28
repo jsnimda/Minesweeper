@@ -33,6 +33,20 @@ def test_detection_properties_and_precision():
     assert section['Coordinate space'] == 'Screenshot pixels'
 
 
+def test_tiled_result_has_no_global_decoder_status():
+    from types import SimpleNamespace
+    state = RecognitionSelection(); result = sample(mode='tiled')
+    result.grids[0].decoding = None
+    result.grids[0].heatmaps = None
+    result.grids[0].phase_data['observations'] = [SimpleNamespace(fields=np.zeros((5, 2, 2)))]
+    state.replace(result)
+    sections = values(inspector_sections(state.snapshot, state.snapshot.roots[0].children[0].id))
+    assert sections['Geometry result']['Decoder status'] == 'Unavailable'
+    assert sections['Geometry result']['Validation status'] == 'Accepted'
+    assert sections['Stored outputs']['Fitted lattice'] == 'Yes'
+    assert sections['Stored outputs']['Heatmaps'] == 'Tile fields retained in observations'
+
+
 def test_geometry_properties_and_missing_optional_values():
     state = RecognitionSelection(); state.replace(sample(mode='tiled'))
     node = state.snapshot.roots[0].children[0]

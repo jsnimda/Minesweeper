@@ -55,7 +55,7 @@ class Detection:
 class GeometryResult:
     detection_index: int
     crop: Crop
-    heatmaps: np.ndarray
+    heatmaps: np.ndarray | None
     heatmap_transform: object
     decoding: object
     validation: object

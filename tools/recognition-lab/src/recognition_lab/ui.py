@@ -13,13 +13,24 @@ from .recognition_state import RecognitionSelection
 from .explorer import explorer_items
 from .viewer_selection import hit_detection, image_point, selection_region
 from .inspector import inspector_sections, property_report
-from .rendering import draw, draw_viewer_visualization, draw_selection, RecognitionStyle
+from .rendering import (draw, draw_viewer_visualization, draw_selection, draw_local_geometry,
+                        draw_global_terminations, draw_global_cells, RecognitionStyle)
+from .local_geometry import resolve_local, mapping as local_mapping, primitives as local_primitives
+from .frequency_panel import FrequencyPanel
+from .local_validation_panel import LocalValidationPanel
+from .local_validation_diagnostics import METRICS as LOCAL_SUPPORT_METRICS, SupportCache, cell_at, resolve_validation
+from .global_panel import GlobalPanel
+from .global_diagnostics import GlobalHeatCache, inspect_global, participation_rectangles, resolve_global
+from .global_validation_diagnostics import GlobalCellCache, inspect_cell as inspect_global_cell, termination_lines, visible_cells
 from .viewer import ImageViewer, surface_pixmap
 from .preferences import DEFAULTS, PreferencesDialog
 from .appearance import apply_appearance
 from .icons import icon
 from .zoom_text import parse_percent, format_percent
 from .viewport import WHEEL_STEP_FACTOR
+from .viewport import reanchor_viewport
+from .model_visualization import CHANNELS, DiagnosticCache, colors, resolve_observation
+import numpy as np
 
 
 class ZoomSelector(QComboBox):
@@ -132,6 +143,18 @@ class MainWindow(QMainWindow):
         self.folder_open = False
         self.overlay = Overlay(self)
         self._tile_grid = None
+        self._diagnostic_cache = DiagnosticCache()
+        self._support_cache = SupportCache()
+        self._global_heat_cache = GlobalHeatCache()
+        self._global_cell_cache = GlobalCellCache()
+        self._global_heat_rgba = self._global_heat_image = None
+        self._global_evidence = None
+        self._support_evidence = None
+        self._support_image_array = self._support_image = None
+        self._diagnostic_view = None
+        self._view_key = None
+        self._view_kind = None
+        self._view_states = {}
         self.canvas = ImageViewer()
         self.canvas.clicked.connect(self.viewer_clicked)
         self.workspace = QStackedWidget()
@@ -142,6 +165,10 @@ class MainWindow(QMainWindow):
         self.viewer_toolbar = QToolBar('Viewer')
         self.viewer_toolbar.setMovable(False)
         self.viewer_layout.addWidget(self.viewer_toolbar)
+        self.content_label = QLabel('Source image · Screenshot pixels')
+        self.legend_label = QLabel(); self.legend_label.setTextFormat(Qt.TextFormat.RichText)
+        self.viewer_layout.addWidget(self.content_label)
+        self.viewer_layout.addWidget(self.legend_label)
         self.viewer_layout.addWidget(self.canvas, 1)
         self.workspace.addWidget(self.viewer_container)
         self.setDockNestingEnabled(True)
@@ -236,8 +263,9 @@ class MainWindow(QMainWindow):
         self.inspect_empty = QLabel('Select a recognition result to inspect it.'); self.inspect_empty.setWordWrap(True)
         self.inspect = QTreeWidget(); self.inspect.setColumnCount(2)
         self.inspect.setHeaderLabels(['Property', 'Value'])
-        self.inspect.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.inspect.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.inspect.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.inspect.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        self.inspect.setColumnWidth(0, 190); self.inspect.setColumnWidth(1, 230)
         self.inspect.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.inspect.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.inspect.customContextMenuRequested.connect(self.inspect_context_menu)
@@ -252,6 +280,7 @@ class MainWindow(QMainWindow):
         inspect_layout.addWidget(self.copy_report_button)
         tabs.addTab(inspect_panel, 'Inspect')
         layers_panel = QWidget(); layers_form = QFormLayout(layers_panel)
+        layers_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.image_sampling = QComboBox()
         self.image_sampling.addItem('Nearest neighbor', 'nearest')
         self.image_sampling.addItem('Bilinear', 'smooth')
@@ -264,8 +293,10 @@ class MainWindow(QMainWindow):
         self.pixel_grid.toggled.connect(self.toolbar_pixel_grid.setChecked)
         self.image_sampling.currentIndexChanged.connect(self.sync_sampling_action)
         self.sync_sampling_action()
-        self.heatmap = QComboBox(); self.heatmap.addItems(['None', 'Phase occupancy', 'Phase coverage', 'Tile horizontal phase', 'Tile vertical phase']); self.heatmap.currentIndexChanged.connect(self.redraw); layers_form.addRow('Heatmap', self.heatmap)
-        self.tile_inspect = self.spin(0, 0, 99999); self.tile_inspect.valueChanged.connect(self.redraw); layers_form.addRow('Phase tile index (zero-based)', self.tile_inspect)
+        self.heatmap = QComboBox(); self.heatmap.addItems(['None', 'Phase occupancy', 'Phase coverage', 'Phase fusion weights', 'Tile horizontal phase', 'Tile vertical phase']); self.heatmap.currentIndexChanged.connect(self.redraw); layers_form.addRow('Heatmap', self.heatmap)
+        self.global_heat_legend = QLabel('Global heatmap off'); self.global_heat_legend.setWordWrap(True)
+        layers_form.addRow('Global heatmap legend', self.global_heat_legend)
+        self.tile_inspect = self.spin(0, 0, 99999); self.tile_inspect.valueChanged.connect(self.tile_index_changed); layers_form.addRow('Phase tile index (zero-based)', self.tile_inspect)
         self.stroke_mode = QComboBox()
         self.stroke_mode.addItem('Screen space', 'screen')
         self.stroke_mode.addItem('Image space', 'image')
@@ -281,8 +312,30 @@ class MainWindow(QMainWindow):
         self.stroke_width.valueChanged.connect(self.redraw)
         self.vector_opacity.valueChanged.connect(self.redraw)
         self.layer_widgets = {}
-        for key, label in [('detections','Detections'),('crops','Crop boundaries'),('boundaries','Grid boundaries'),('centers','Cell centers'), ('tiles','Phase tile layout'), ('terminations','Phase observed terminations'), ('cell_support','Phase cell support')]:
-            check = QCheckBox(label); check.setChecked(key not in ('tiles', 'terminations', 'cell_support')); check.toggled.connect(self.redraw); self.layer_widgets[key] = check; layers_form.addRow(check)
+        for key, label in [('detections','Detections'),('crops','Crop boundaries'),('boundaries','Grid boundaries'),('centers','Cell centers'), ('tiles','Phase tile layout'), ('terminations','Local visible crossings'), ('cell_support','Global phase cell support'), ('local_lattice','Local lattice lines'), ('local_centers','Local cell centers'), ('local_boundaries','Local equivalent boundaries'), ('local_censoring','Local censoring indicators')]:
+            check = QCheckBox(label); check.setChecked(key not in ('tiles', 'terminations', 'cell_support', 'local_lattice', 'local_centers', 'local_boundaries', 'local_censoring')); check.toggled.connect(self.redraw); self.layer_widgets[key] = check; layers_form.addRow(check)
+        participation = QCheckBox('Consensus participation (tile labels one-based; requires tile layout)')
+        participation.setChecked(False); participation.toggled.connect(self.redraw)
+        self.layer_widgets['participation'] = participation; layers_form.addRow(participation)
+        termination = QCheckBox('Global termination estimates (projected)')
+        termination.setChecked(False); termination.toggled.connect(self.redraw)
+        self.layer_widgets['global_terminations'] = termination; layers_form.addRow(termination)
+        self.global_cell_metric = QComboBox(); self.global_cell_metric.addItems(['Cell occupancy', 'Cell coverage'])
+        self.global_cell_metric.currentIndexChanged.connect(self.redraw); layers_form.addRow('Global cell metric', self.global_cell_metric)
+        self.global_cell_opacity = QSpinBox(); self.global_cell_opacity.setRange(0, 100); self.global_cell_opacity.setValue(45)
+        self.global_cell_opacity.setSuffix('%'); self.global_cell_opacity.valueChanged.connect(self.redraw)
+        layers_form.addRow('Global cell opacity', self.global_cell_opacity)
+        self.global_cell_legend = QLabel('Global cell support off'); self.global_cell_legend.setWordWrap(True)
+        layers_form.addRow('Global cell legend', self.global_cell_legend)
+        self.local_status = QLabel(); self.local_status.setWordWrap(True)
+        layers_form.addRow('Local evidence', self.local_status)
+        self.local_support = QComboBox(); self.local_support.addItems(['None', *LOCAL_SUPPORT_METRICS])
+        self.local_support.currentIndexChanged.connect(self.redraw); layers_form.addRow('Local validation cells', self.local_support)
+        self.local_support_opacity = QSpinBox(); self.local_support_opacity.setRange(0, 100)
+        self.local_support_opacity.setValue(45); self.local_support_opacity.setSuffix('%')
+        self.local_support_opacity.valueChanged.connect(self.redraw); layers_form.addRow('Local support opacity', self.local_support_opacity)
+        self.local_support_legend = QLabel('Local validation overlay off'); self.local_support_legend.setWordWrap(True)
+        layers_form.addRow('Local support legend', self.local_support_legend)
         self.actions['grid'].setChecked(self.layer_widgets['boundaries'].isChecked())
         self.layer_widgets['boundaries'].toggled.connect(self.actions['grid'].setChecked)
         self.overlay_layer_widgets = {}
@@ -292,6 +345,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.scroll_panel(layers_panel), 'Layers')
 
         panel = QWidget(); form = QFormLayout(panel)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.yolo_path = QLineEdit(str(ROOT/'models/yolo.pt'))
         self.phase_path = QLineEdit(str(ROOT / 'models/phase_grid_unet.pt'))
         self.yolo_path.setMinimumWidth(0); self.phase_path.setMinimumWidth(0)
@@ -325,9 +379,15 @@ class MainWindow(QMainWindow):
         diagnostic_tabs = QTabWidget()
         self.diagnostics = QTextEdit(); self.diagnostics.setReadOnly(True)
         self.performance = QTextEdit(); self.performance.setReadOnly(True)
+        self.frequency_panel = FrequencyPanel()
+        self.local_validation_panel = LocalValidationPanel()
+        self.global_panel = GlobalPanel()
         self.diagnostics.setPlaceholderText('No image diagnostics available.')
         self.performance.setPlaceholderText('No timing information available.')
         diagnostic_tabs.addTab(self.diagnostics, 'Diagnostics'); diagnostic_tabs.addTab(self.performance, 'Performance')
+        diagnostic_tabs.addTab(self.frequency_panel, 'Frequency')
+        diagnostic_tabs.addTab(self.local_validation_panel, 'Local Validation')
+        diagnostic_tabs.addTab(self.global_panel, 'Global Recognition')
         self.diagnostics_dock = self.make_dock('Diagnostics', diagnostic_tabs, Qt.DockWidgetArea.BottomDockWidgetArea)
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
@@ -376,6 +436,9 @@ class MainWindow(QMainWindow):
             widget.valueChanged.connect(self.pending_settings_changed)
         for widget in (self.yolo_path, self.phase_path):
             widget.textChanged.connect(self.pending_settings_changed)
+        for widget in (self.content_mode, self.content_region, self.output_channel):
+            widget.currentIndexChanged.connect(self.redraw)
+        self.known_outline.toggled.connect(self.redraw)
         self.update_empty_states()
         self.update_action_states()
         self.update_inspector()
@@ -393,13 +456,52 @@ class MainWindow(QMainWindow):
         return scroll
 
     def update_cursor_status(self, inspection):
+        if self._view_kind == 'diagnostic':
+            sampled = self._diagnostic_view.inspect(inspection.x, inspection.y) if self._diagnostic_view is not None else None
+            if sampled is None:
+                self.cursor_status.setText('Cursor: outside diagnostic image'); return
+            pixel, canvas_point, value = sampled
+            if self._diagnostic_view.channel is None:
+                detail = 'RGB normalized: ' + ', '.join(repr(float(v)) for v in value)
+            else:
+                detail = f'{self._diagnostic_view.channel}: {float(value)!r}'
+            self.set_cursor_with_cell(f'{self._diagnostic_view.coordinate_label}: {inspection.x:.3f}, {inspection.y:.3f} | '
+                                      f'Pixel: {pixel[0]}, {pixel[1]} | Canvas: {canvas_point[0]:.3f}, {canvas_point[1]:.3f} | {detail}', inspection)
+            return
         if inspection.pixel is None:
             detail = 'Pixel: — | RGB: —'
         else:
             x, y = inspection.pixel
             r, g, b, _ = inspection.rgba
             detail = f'Pixel: {x}, {y} | RGB: {r}, {g}, {b}'
-        self.cursor_status.setText(f'Cursor: {inspection.x:.3f}, {inspection.y:.3f} | {detail}')
+        self.set_cursor_with_cell(f'Cursor: {inspection.x:.3f}, {inspection.y:.3f} | {detail}', inspection)
+
+    def set_cursor_with_cell(self, text, inspection):
+        if (inspection.pixel is not None and self._view_kind == 'source'
+                and self.heatmap.currentText() in ('Phase occupancy', 'Phase coverage', 'Phase fusion weights')):
+            sample = inspect_global(self._global_evidence, inspection.x, inspection.y)
+            if sample is not None:
+                position, pixel, values = sample
+                text += (f' | Global crop ({position[0]:.3f}, {position[1]:.3f}), pixel {pixel}: '
+                         f'occupancy={values.get("occupancy", "Unavailable")!r}, '
+                         f'weight sum={values.get("weights", "Unavailable")!r}, coverage={values["coverage"]!r}')
+        if inspection.pixel is not None and self._view_kind == 'source' and self.layer_widgets['cell_support'].isChecked():
+            global_cell = inspect_global_cell(self._global_evidence, inspection.x, inspection.y)
+            if global_cell is not None:
+                row, col, values = global_cell
+                text += f' | Global validation cell row {row}, column {col} (zero-based): {values!r}'
+        cell = None
+        if inspection.pixel is not None and self._support_evidence is not None and self._support_evidence.local is not None:
+            tr = local_mapping(self._support_evidence.local, self.content_mode.currentText(), self.content_region.currentText())
+            cell = cell_at(self._support_evidence, tr, inspection.x, inspection.y)
+        text += f' | Exact viewer coordinate: ({inspection.x!r}, {inspection.y!r})'
+        if cell is None:
+            self.cursor_status.setText(text.split(' | Global crop')[0].split(' | Exact viewer coordinate')[0]); self.cursor_status.setToolTip(text); return
+        row, col, values = cell
+        detail = ', '.join(f'{name}={value!r}' for name, value in values.items()) or 'cell measurements unavailable'
+        full = f'{text} | Validation cell row {row}, column {col} (zero-based): {detail}'
+        self.cursor_status.setText(text.split(' | Global crop')[0].split(' | Exact viewer coordinate')[0] + f' | Cell {row}, {col}')
+        self.cursor_status.setToolTip(full)
 
     def update_zoom_status(self, magnification):
         self.zoom_status.setText(f'Zoom: {format_percent(magnification)}')
@@ -407,6 +509,12 @@ class MainWindow(QMainWindow):
     def setup_viewer_toolbar(self):
         bar = self.viewer_toolbar
         bar.setIconSize(QSize(16, 16))
+        self.content_mode = QComboBox(); self.content_mode.addItems(['Source image', 'Model input', 'Model output'])
+        self.content_region = QComboBox(); self.content_region.addItems(['Full canvas', 'Known region'])
+        self.output_channel = QComboBox(); self.output_channel.addItems(CHANNELS)
+        self.known_outline = QCheckBox('Known outline')
+        for widget in (self.content_mode, self.content_region, self.output_channel, self.known_outline): bar.addWidget(widget)
+        bar.addSeparator()
         self.zoom_out = QAction('Zoom out', self); self.zoom_out.setToolTip('Zoom out at viewport center')
         self.zoom_out.triggered.connect(lambda: self.canvas.zoom_by(1 / WHEEL_STEP_FACTOR))
         bar.addAction(self.zoom_out)
@@ -675,6 +783,11 @@ class MainWindow(QMainWindow):
         phase = grid.phase_data if grid is not None else None
         self.heatmap.setEnabled(bool(phase))
         limits, index = tile_selection(grid, self._tile_grid, self.tile_inspect.value())
+        identity = self.recognition.selected
+        if (limits is not None and grid is not None and grid.diagnostics.get('mode') == 'tiled'
+                and identity is not None and identity.kind in ('observation', 'hypothesis')
+                and self.recognition.snapshot.node(identity) is not None):
+            index = identity.observation_index
         self.tile_inspect.blockSignals(True)
         try:
             self.tile_inspect.setSpecialValueText('Unavailable' if limits is None else '')
@@ -683,15 +796,193 @@ class MainWindow(QMainWindow):
             self._tile_grid = grid
         finally:
             self.tile_inspect.blockSignals(False)
-        self.tile_inspect.setEnabled(limits is not None and self.heatmap.currentText().startswith('Tile '))
+        self.tile_inspect.setEnabled(limits is not None and grid.diagnostics.get('mode') == 'tiled'
+                                     and (self.heatmap.currentText().startswith('Tile ') or self.content_mode.currentText() != 'Source image'))
         mode = self.heatmap.currentText()
         tile = self.tile_inspect.value()
+        self.frequency_panel.set_selection(self.recognition, tile)
+        self.local_validation_panel.set_selection(self.recognition, tile)
+        self.global_panel.set_selection(self.recognition)
+        self._global_evidence = resolve_global(self.recognition)
+        global_modes = ('Phase occupancy', 'Phase coverage', 'Phase fusion weights')
+        heat_rgba, heat_legend = self._global_heat_cache.get(self.recognition.snapshot, self._global_evidence, mode)
+        if heat_rgba is not self._global_heat_rgba:
+            self._global_heat_rgba = heat_rgba
+            self._global_heat_image = skia.Image.fromarray(heat_rgba) if heat_rgba is not None else None
+        self.global_heat_legend.setText(heat_legend or ('Global heatmap unavailable' if mode in global_modes else 'Global heatmap off'))
+        global_heat = self._global_heat_image
+        participation = (participation_rectangles(self._global_evidence)
+                         if layers.get('tiles') and layers.get('participation') else None)
+        global_metric = self.global_cell_metric.currentText() if layers.get('cell_support') else None
+        global_cells_rgb = self._global_cell_cache.get(self.recognition.snapshot, self._global_evidence, global_metric)
+        global_cell_artifact = self._global_cell_cache.artifact
+        global_cell_opacity = self.global_cell_opacity.value() / 100
+        if global_metric is None:
+            self.global_cell_legend.setText('Global cell support off')
+        elif global_cells_rgb is None:
+            self.global_cell_legend.setText('Retained global cell values or candidate geometry unavailable')
+        else:
+            self.global_cell_legend.setText(f'{global_metric}: 0–1 black → white; magenta: nonfinite. '
+                                            'Values summarize cell interiors; observed/supported masks are not retained. '
+                                            'Rendering is limited to 20,000 visible cells.')
+        terminations = termination_lines(self._global_evidence) if layers.get('global_terminations') else ()
         style = RecognitionStyle(self.stroke_mode.currentData(), self.stroke_width.value(), self.vector_opacity.value() / 100)
-        def visualize(canvas, magnification, dpr):
-            draw_viewer_visualization(canvas, result, layers, None, grid, mode, tile, style, magnification, dpr)
-            draw_selection(canvas, bounds, magnification, dpr, style.opacity)
-        self.canvas.set_visualization(visualize)
+        self.update_viewer_content(tile)
+        local = resolve_local(self.recognition, tile)
+        self._support_evidence = resolve_validation(self.recognition, tile)
+        metric = self.local_support.currentText()
+        rgba = self._support_cache.get(self.recognition.snapshot, self._support_evidence, metric)
+        if rgba is not self._support_image_array:
+            self._support_image_array = rgba
+            self._support_image = skia.Image.fromarray(rgba) if rgba is not None else None
+        support_image = self._support_image
+        if metric == 'None':
+            self.local_support_legend.setText('Local validation overlay off')
+        elif support_image is None:
+            self.local_support_legend.setText('Unavailable for the selected hypothesis or cell array')
+        else:
+            _, scale = LOCAL_SUPPORT_METRICS[metric]
+            if metric == 'Supported mask': text = 'Green: supported; red: unsupported'
+            elif metric == 'Observable mask': text = 'Cyan: observable; gray: unobservable'
+            else:
+                gradient = 'blue → white → red' if scale[2] == 'diverging' else 'black → white'
+                text = f'{metric}: {scale[0]:.6g} to {scale[1]:.6g} ({gradient}); magenta: nonfinite observable value'
+            self.local_support_legend.setText(text + '; gray: unobservable or observability unavailable. '
+                                              'Uniform cell colors represent center samples, not a continuous field.')
+        support_opacity = self.local_support_opacity.value() / 100
+        local_on = any(layers.get(key) for key in ('local_lattice', 'local_centers', 'local_boundaries', 'terminations', 'local_censoring'))
+        if not local_on:
+            self.local_status.setText('Local layers off')
+        elif local is None:
+            self.local_status.setText('Local hypothesis unavailable')
+        else:
+            fallback = ' · selected observation fallback' if local.fallback else ''
+            self.local_status.setText(f'Local: {local.validation} · decoder: {local.decoder_status or "Unavailable"}{fallback}. '
+                                      'Equivalent boundaries are not confirmed board edges; × crossing, □ censored.')
+        def local_overlay(canvas, magnification):
+            if local is None or not local_on:
+                return
+            try:
+                transform = local_mapping(local, self.content_mode.currentText(), self.content_region.currentText())
+                tr = self.canvas.transform
+                left, top = tr.to_image(0, 0)
+                right, bottom = tr.to_image(self.canvas.width(), self.canvas.height())
+                elements = local_primitives(local, transform, (left, top, right, bottom), layers)
+            except (AttributeError, ValueError, TypeError, ZeroDivisionError, OverflowError):
+                return
+            draw_local_geometry(canvas, elements, local.validation, style, magnification)
+        def support_overlay(canvas):
+            if support_image is None or self._support_evidence is None or self._support_evidence.local is None:
+                return
+            try:
+                selected = self._support_evidence.local
+                transform = local_mapping(selected, self.content_mode.currentText(), self.content_region.currentText())
+                if transform is None: return
+                sx, sy, tx, ty = transform
+                h = selected.hypothesis
+                vals = (h.x.origin, h.y.origin, h.x.pitch, h.y.pitch, h.x.end, h.y.end)
+                if not all(np.isfinite(v) for v in vals) or min(h.x.pitch, h.y.pitch) <= 0: return
+                mapped = (tx + sx*h.x.origin, ty + sy*h.y.origin, sx*h.x.pitch, sy*h.y.pitch)
+                if not all(np.isfinite(v) for v in mapped): return
+                canvas.save()
+                try:
+                    canvas.translate(mapped[0], mapped[1])
+                    canvas.scale(mapped[2], mapped[3])
+                    paint = skia.Paint(); paint.setAlpha(round(255*support_opacity))
+                    canvas.drawImage(support_image, 0, 0, skia.SamplingOptions(skia.FilterMode.kNearest), paint)
+                finally:
+                    canvas.restore()
+            except (AttributeError, ValueError, TypeError, ZeroDivisionError, OverflowError):
+                return
+        if self._view_kind == 'source':
+            def visualize(canvas, magnification, dpr):
+                draw_viewer_visualization(canvas, result, layers, None, grid, 'None' if mode in global_modes else mode,
+                                          tile, style, magnification, dpr, prepared_heat=global_heat,
+                                          participation_rects=participation)
+                if global_cells_rgb is not None:
+                    tr = self.canvas.transform
+                    viewport = (*tr.to_image(0, 0), *tr.to_image(self.canvas.width(), self.canvas.height()))
+                    cells = visible_cells(self._global_evidence, global_cells_rgb, viewport, artifact=global_cell_artifact)
+                    draw_global_cells(canvas, cells, global_cell_opacity)
+                draw_global_terminations(canvas, terminations, style, magnification, dpr)
+                support_overlay(canvas)
+                local_overlay(canvas, magnification)
+                draw_selection(canvas, bounds, magnification, dpr, style.opacity)
+            self.canvas.set_visualization(visualize)
+        elif self._diagnostic_view is not None:
+            observation = resolve_observation(self.recognition, tile)
+            box = getattr(observation, 'known_box', None)
+            show_outline = self.known_outline.isChecked() and self.content_region.currentText() == 'Full canvas'
+            def visualize(canvas, magnification, dpr):
+                if show_outline and box is not None:
+                    paint = skia.Paint(Color=0xffffff00, Style=skia.Paint.kStroke_Style, StrokeWidth=2/magnification, AntiAlias=True)
+                    canvas.drawRect(skia.Rect.MakeLTRB(*box), paint)
+                support_overlay(canvas)
+                local_overlay(canvas, magnification)
+            self.canvas.set_visualization(visualize)
+        self.canvas._refresh_cursor()
         self.overlay.update()
+
+    def update_viewer_content(self, tile):
+        mode = self.content_mode.currentText()
+        source = mode == 'Source image'
+        self.content_region.setEnabled(not source)
+        self.output_channel.setEnabled(mode == 'Model output')
+        self.known_outline.setEnabled(not source and self.content_region.currentText() == 'Full canvas')
+        observation = None if source else resolve_observation(self.recognition, tile)
+        if source:
+            current = resolve_observation(self.recognition, tile)
+            if self._diagnostic_cache.snapshot is not self.recognition.snapshot or self._diagnostic_cache.observation is not current:
+                self._diagnostic_cache.clear()
+        self._diagnostic_view = None if source else self._diagnostic_cache.get(
+            self.recognition.snapshot, observation, mode, self.content_region.currentText(), self.output_channel.currentText())
+        view = self._diagnostic_view
+        if self.frame is not None:
+            dimensions = self.frame.image.size if source else (view.image.size if view is not None else None)
+            space = 'Screenshot' if source else (view.coordinate_label if view is not None else 'Unavailable')
+            self.image_status.setText(f'{space}: {dimensions[0]} × {dimensions[1]}' if dimensions else f'{space}: —')
+            self.image_status.setToolTip(f'Source image: {self.frame.image.width} × {self.frame.image.height}')
+        key = (('source', id(self.frame)) if source else
+               ('diagnostic', id(self.recognition.snapshot), id(observation), mode,
+                self.content_region.currentText(), self.output_channel.currentText() if mode == 'Model output' else None))
+        kind = 'source' if source else 'diagnostic'
+        image = self.frame.image if source and self.frame is not None else (view.image if view is not None else None)
+        if key != self._view_key:
+            if self._view_kind is not None and self.canvas.image_size is not None:
+                self._view_states[self._view_kind] = (self.canvas.image_size, self.canvas.transform, self.canvas.mode,
+                                                       (self.canvas.width(), self.canvas.height()), self.canvas._dpr)
+            self.canvas.set_image(image)
+            self._view_kind, self._view_key = kind, key
+            old = self._view_states.get(kind)
+            if image is not None and old is not None and old[0] == image.size:
+                _, transform, navigation_mode, size, dpr = old
+                if navigation_mode == 'fit':
+                    self.canvas.fit()
+                elif min(*size, self.canvas.width(), self.canvas.height()) > 0:
+                    self.canvas.set_transform(reanchor_viewport(transform, size, (self.canvas.width(), self.canvas.height()), dpr, self.canvas._dpr))
+        if source:
+            self.content_label.setText('Source image · Screenshot pixels')
+            self.legend_label.clear(); self.legend_label.hide()
+        elif view is None:
+            self.content_label.setText(f'{mode} · Artifact unavailable for selected observation')
+            self.legend_label.clear(); self.legend_label.hide()
+        else:
+            self.content_label.setText(f'{mode} · {view.coordinate_label} · nonfinite pixels: magenta')
+            if view.scale is None:
+                self.legend_label.clear(); self.legend_label.hide()
+            else:
+                low, high, palette = view.scale
+                sample = colors(np.linspace(low, high, 32).reshape(1, -1), view.scale)[0]
+                swatches = ''.join(f'<span style="background-color:#{r:02x}{g:02x}{b:02x}">&nbsp;&nbsp;</span>' for r, g, b in sample)
+                note = ' · magnitude is not calibrated confidence' if 'magnitude' in view.channel else ''
+                self.legend_label.setText(f'{view.channel}: {low:.6g} {swatches} {high:.6g} · midpoint {(low+high)/2:.6g} · {palette}{note}')
+                self.legend_label.show()
+
+    def tile_index_changed(self, index):
+        if self.recognition.select_tile(index):
+            self.sync_result_tree_selection()
+            self.show_diagnostics(); self.update_empty_states()
+        self.redraw()
     def change_opacity(self, value): self.overlay.setWindowOpacity(value)
     @property
     def result(self):
@@ -712,10 +1003,16 @@ class MainWindow(QMainWindow):
         except Exception as exc: self.diagnostics.setPlainText(f'Monitor enumeration failed: {exc}')
     def set_frame(self, frame):
         self.generation += 1; self.overlay.hide(); self.frame = frame; self.recognition.replace(None)
+        self._diagnostic_cache.clear(); self._diagnostic_view = None
+        self._support_cache.clear(); self._support_evidence = None
+        self._support_image_array = self._support_image = None
+        self._global_heat_cache.clear(); self._global_heat_rgba = self._global_heat_image = None; self._global_evidence = None
+        self._global_cell_cache.clear()
+        self._view_states.clear(); self._view_kind = None; self._view_key = None
         self.canvas.set_image(frame.image)
         self.rebuild_result_tree(); self.show_diagnostics(); self.redraw()
         self.workspace.setCurrentWidget(self.viewer_container); self.canvas.fit()
-        self.image_status.setText(f'Image: {frame.image.width} × {frame.image.height}'); self.cursor_status.setText('Cursor: —')
+        self.cursor_status.setText('Cursor: —')
         self.update_empty_states(); self.update_action_states()
     def open_image(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Open image', '', 'Images (*.png *.jpg *.jpeg *.bmp *.webp)')
@@ -821,6 +1118,11 @@ class MainWindow(QMainWindow):
         self.start_worker(action, lambda result: self.accept_result(result, geometry_update=mode == 'geometry'))
     def accept_result(self, result, geometry_update=False):
         self.canvas.cancel_pointer()
+        self._diagnostic_cache.clear(); self._diagnostic_view = None
+        self._support_cache.clear(); self._support_evidence = None
+        self._support_image_array = self._support_image = None
+        self._global_heat_cache.clear(); self._global_heat_rgba = self._global_heat_image = None; self._global_evidence = None
+        self._global_cell_cache.clear()
         self.recognition.replace(result, geometry_update=geometry_update, fallback_to_first_grid=True)
         self.rebuild_result_tree()
         self.show_diagnostics(); self.redraw(); self.update_empty_states(); self.update_action_states()
@@ -839,9 +1141,9 @@ class MainWindow(QMainWindow):
                     selected_item = item
                 for child in data.children:
                     add_item(item, child)
+                item.setExpanded(data.identity.kind not in ('observations', 'observation', 'hypothesis'))
             for data in explorer_items(self.recognition.snapshot):
                 add_item(self.result_tree, data)
-            self.result_tree.expandAll()
             if selected_item is not None:
                 self.result_tree.setCurrentItem(selected_item)
                 self.result_tree.scrollToItem(selected_item)
@@ -854,6 +1156,8 @@ class MainWindow(QMainWindow):
         self.show_diagnostics(); self.redraw(); self.update_empty_states()
 
     def viewer_clicked(self, point):
+        if self.content_mode.currentText() != 'Source image':
+            return
         # Resolve on release against the current snapshot, never an ID saved at press.
         if image_point(self.canvas.transform, point, self.canvas.image_size) is None:
             return
@@ -892,6 +1196,8 @@ class MainWindow(QMainWindow):
         identity = item.data(0, Qt.ItemDataRole.UserRole)
         bounds = selection_region(self.recognition.snapshot, identity)
         if bounds is not None:
+            if self.content_mode.currentText() != 'Source image':
+                self.content_mode.setCurrentText('Source image')
             self.canvas.fit_region(bounds)
 
     def update_inspector(self):

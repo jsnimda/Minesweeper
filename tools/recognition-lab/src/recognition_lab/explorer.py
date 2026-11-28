@@ -1,7 +1,7 @@
 """Presentation data and viewer selection policy for recognition results."""
 from dataclasses import dataclass
 
-from .recognition_state import ResultId
+from .recognition_state import ResultId, hypothesis_validation
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,21 @@ def explorer_items(snapshot):
             decoder_status = getattr(data.decoding, 'status', None)
             if decoder_status:
                 summary += f' · Decoder: {decoder_status}'
+        elif identity.kind == 'observations':
+            label = 'Observations'
+            summary = f'{len(data)} observations'
+        elif identity.kind == 'observation':
+            grid = snapshot.grid(identity)
+            label = f'{"Tile" if grid.diagnostics.get("mode") == "tiled" else "Observation"} {identity.observation_index + 1} (1-based)'
+            decoded = getattr(data, 'decoding', None)
+            local = getattr(data, 'local_validation', None)
+            status = getattr(decoded, 'status', None) or 'Unavailable'
+            accepted = getattr(local, 'local_accepted', None)
+            local_status = 'Accepted' if accepted is True else 'Rejected' if accepted is False else 'Unavailable'
+            summary = f'Dec: {status} · Local: {local_status}'
+        elif identity.kind == 'hypothesis':
+            label = f'Hypothesis {identity.hypothesis_index + 1}'
+            summary = hypothesis_validation(snapshot.observation(identity), identity.hypothesis_index)
         elif identity.kind == 'lattice':
             label = 'Fitted lattice'
             # Consensus has pitch and origin, but no board dimensions. A global

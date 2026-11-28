@@ -2,6 +2,9 @@
 from dataclasses import dataclass
 from numbers import Number
 
+from .recognition_state import hypothesis_validation
+from .viewer_selection import observation_source_bounds
+
 
 @dataclass(frozen=True)
 class Property:
@@ -79,6 +82,97 @@ def _measurements(validation):
     return values if values else [('Measurements', '(no scalar measurements recorded)')]
 
 
+def _reasons(reasons):
+    return None if reasons is None else ('; '.join(reasons) if reasons else '(none recorded)')
+
+
+def _observation_space(grid):
+    mode = grid.diagnostics.get('mode')
+    if mode == 'whole':
+        return 'Resized crop pixels (valid region, padding removed)'
+    if mode == 'tiled':
+        return 'Tile-local pixels (native resolution)'
+    return 'Unavailable (inference mode not recorded)'
+
+
+def _array_info(array):
+    return (getattr(array, 'shape', None), str(array.dtype) if hasattr(array, 'dtype') else None)
+
+
+def _observation_sections(grid, observation, identity):
+    box = getattr(observation, 'box', None)
+    local_box = (0, 0, box[2]-box[0], box[3]-box[1]) if box is not None else None
+    transform = getattr(observation, 'input_transform', None)
+    full = getattr(observation, 'full_fields', None)
+    valid = getattr(observation, 'fields', None)
+    input_array = getattr(observation, 'input_array', None)
+    decoded = getattr(observation, 'decoding', None)
+    local = getattr(observation, 'local_validation', None)
+    full_shape, full_dtype = _array_info(full)
+    valid_shape, valid_dtype = _array_info(valid)
+    input_shape, input_dtype = _array_info(input_array)
+    accepted = getattr(local, 'local_accepted', None)
+    local_status = 'Accepted' if accepted is True else 'Rejected' if accepted is False else 'Unavailable'
+    return (
+        _section('Observation', [('Observation index (zero-based)', identity.observation_index),
+            ('Inference mode', grid.diagnostics.get('mode')), ('Coordinate space', _observation_space(grid)),
+            ('Observation bounds (local px)', local_box), ('Box coordinate space', _space(grid)),
+            ('Observation box (px)', box), ('Source bounds coordinate space', 'Screenshot pixels'),
+            ('Source bounds (px)', observation_source_bounds(grid, observation))]),
+        _section('Model input and preprocessing', [('Input shape (CHW)', input_shape), ('Input dtype', input_dtype),
+            ('Input dimensions (width, height)', getattr(transform, 'canvas_size', None)),
+            ('Representation', getattr(observation, 'input_representation', None)),
+            ('Resize method', getattr(observation, 'resize_method', None)),
+            ('Source dimensions', getattr(transform, 'source_size', None)),
+            ('Resized dimensions', getattr(transform, 'resized_size', None)),
+            ('Canvas offset', getattr(transform, 'offset', None)),
+            ('Scale X', getattr(transform, 'scale_x', None)), ('Scale Y', getattr(transform, 'scale_y', None)),
+            ('Known rectangle (model canvas px)', getattr(observation, 'known_box', None)),
+            ('Padding left, top, right, bottom (px)', getattr(observation, 'padding', None))]),
+        _section('Decoder and local validation', [('Decoder status', getattr(decoded, 'status', None)),
+            ('Decoder reasons', _reasons(getattr(decoded, 'reasons', None))),
+            ('Returned hypotheses', len(decoded.hypotheses) if decoded is not None else None),
+            ('Local validation status', local_status),
+            ('Local rejection reasons', _reasons(getattr(local, 'local_reasons', None)))]),
+        _section('Local support measurements', _measurements(local)),
+        _section('Diagnostic artifacts', [('Model input retained', input_array is not None),
+            ('Full activated fields retained', full is not None), ('Full fields shape (CHW)', full_shape),
+            ('Full fields dtype', full_dtype), ('Valid fields retained', valid is not None),
+            ('Valid fields shape (CHW)', valid_shape), ('Valid fields dtype', valid_dtype),
+            ('Decoder retained', decoded is not None), ('Local validation retained', local is not None)]))
+
+
+def _hypothesis_sections(grid, observation, hypothesis, identity):
+    x, y = hypothesis.x, hypothesis.y
+    xe, ye = hypothesis.x_evidence, hypothesis.y_evidence
+    applicability = hypothesis_validation(observation, identity.hypothesis_index)
+    local = getattr(observation, 'local_validation', None) if applicability.startswith('Evaluated ') else None
+    return (
+        _section('Hypothesis', [('Observation index (zero-based)', identity.observation_index),
+            ('Hypothesis index (zero-based)', identity.hypothesis_index),
+            ('Decoder rank (one-based)', identity.hypothesis_index + 1),
+            ('Score (not calibrated confidence)', hypothesis.score),
+            ('Square preference', hypothesis.square_preference), ('Prior contribution', hypothesis.prior_contribution),
+            ('Coordinate space', _observation_space(grid))]),
+        _section('Local lattice and equivalent boundaries', [('Pitch X (px)', x.pitch), ('Pitch Y (px)', y.pitch),
+            ('Periodic origin X (px modulo pitch)', xe.origin_mod_pitch),
+            ('Periodic origin Y (px modulo pitch)', ye.origin_mod_pitch),
+            ('Left equivalent boundary (px)', x.origin), ('Right equivalent boundary (px)', x.end),
+            ('Top equivalent boundary (px)', y.origin), ('Bottom equivalent boundary (px)', y.end),
+            ('Boundary meaning', 'Local equivalent lattice boundaries; physical termination not implied')]),
+        _section('Visible occupancy crossings', [('Coordinate space', _observation_space(grid)),
+            ('Left crossing (px)', x.visible_start), ('Right crossing (px)', x.visible_end),
+            ('Top crossing (px)', y.visible_start), ('Bottom crossing (px)', y.visible_end),
+            ('Left censored', x.start_censored), ('Right censored', x.end_censored),
+            ('Top censored', y.start_censored), ('Bottom censored', y.end_censored)]),
+        _section('Selected frequency evidence', [('X candidate pitch', xe.pitch), ('X coherence', xe.coherence),
+            ('X magnitude', xe.magnitude), ('Y candidate pitch', ye.pitch), ('Y coherence', ye.coherence),
+            ('Y magnitude', ye.magnitude), ('Interpretation', 'Evidence; not calibrated confidence')]),
+        _section('Local validation', [('Applicability', applicability),
+            ('Reasons', _reasons(getattr(local, 'local_reasons', None)))]),
+        _section('Local support measurements', _measurements(local)))
+
+
 def _inspector_sections(snapshot, identity):
     """Resolve an ID once and describe only fields present in stored results."""
     if snapshot is None or snapshot.node(identity) is None:
@@ -97,11 +191,22 @@ def _inspector_sections(snapshot, identity):
     if grid is None:
         return ()
     validation = grid.validation
+    if identity.kind == 'observations':
+        return (_section('Observations', [('Count', len(data)), ('Inference mode', grid.diagnostics.get('mode'))]),)
+    if identity.kind == 'observation':
+        return _observation_sections(grid, data, identity)
+    if identity.kind == 'hypothesis':
+        return _hypothesis_sections(grid, snapshot.observation(identity), data, identity)
     if identity.kind == 'geometry':
         crop = grid.crop
         x1, y1, x2, y2 = crop.box
         mode = grid.diagnostics.get('mode')
-        if grid.heatmaps is None:
+        if mode == 'tiled' and grid.heatmaps is None:
+            phase = grid.phase_data
+            observations = phase.get('observations') if isinstance(phase, dict) else None
+            heatmaps = ('Tile fields retained in observations' if observations and
+                        any(getattr(o, 'fields', None) is not None for o in observations) else 'Unavailable')
+        elif grid.heatmaps is None:
             heatmaps = 'Unavailable'
         elif mode == 'tiled':
             heatmaps = 'Placeholder; tile fields retained in observations'
