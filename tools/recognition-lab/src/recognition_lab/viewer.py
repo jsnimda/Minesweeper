@@ -8,10 +8,11 @@ from PySide6.QtGui import QCursor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from .inspection import inspect_pixel
+from .viewer_selection import is_drag
 from .minimap import Minimap, centered_transform
 from .viewport import (ViewportTransform, WHEEL_STEP_FACTOR, clamp_magnification,
                        logical_scale, physical_scale, reanchor_viewport,
-                       wheel_factor, zoom_by_factor, visible_pixel_grid)
+                       wheel_factor, zoom_by_factor, visible_pixel_grid, fit_region)
 
 
 def surface_pixmap(surface):
@@ -35,6 +36,7 @@ class ImageViewer(QWidget):
     magnification_changed = Signal(float)  # physical pixels per source pixel
     cursor_changed = Signal(object)
     cursor_left = Signal()
+    clicked = Signal(object)  # viewer-local logical position
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,6 +50,8 @@ class ImageViewer(QWidget):
         self.mode = 'fit'
         self.drag = None
         self.drag_button = None
+        self.drag_start = None
+        self.dragging = False
         self.pointer = None
         self._pinch_anchor = None
         self._dpr = self.devicePixelRatioF()
@@ -136,13 +140,25 @@ class ImageViewer(QWidget):
         if self.image_size and self.width() > 0 and self.height() > 0:
             self._apply_transform(ViewportTransform.fit(*self.image_size, self.width(), self.height()))
 
+    def fit_region(self, bounds):
+        if self.image is not None:
+            transform = fit_region(bounds, (self.width(), self.height()), self._dpr)
+            if transform is not None:
+                self.set_transform(transform)
+
     def actual_size(self):
         if self.image is not None:
             self.set_transform(self.transform.scaled_at(logical_scale(1.0, self._dpr), *self._center()))
 
-    def _clear_interaction(self):
+    def cancel_pointer(self):
         self.drag = None
         self.drag_button = None
+        self.drag_start = None
+        self.dragging = False
+        self.unsetCursor()
+
+    def _clear_interaction(self):
+        self.cancel_pointer()
         self.pointer = None
         self._pinch_anchor = None
         self.unsetCursor()
@@ -208,10 +224,12 @@ class ImageViewer(QWidget):
         if kind == QEvent.Type.NativeGesture and self.image is not None:
             gesture = event.gestureType()
             if gesture == Qt.NativeGestureType.BeginNativeGesture:
+                self.cancel_pointer()
                 self._pinch_anchor = self._gesture_anchor(event, self._cursor_position())
                 event.accept()
                 return True
             if gesture == Qt.NativeGestureType.ZoomNativeGesture:
+                self.cancel_pointer()
                 cursor = self._cursor_position()
                 self.pointer = cursor
                 if cursor is None:
@@ -286,6 +304,7 @@ class ImageViewer(QWidget):
         if self.image is None:
             event.ignore()
             return
+        self.cancel_pointer()
         pixel = event.pixelDelta()
         # A pixel-delta event takes precedence even when it is horizontal-only.
         pixel_present = not pixel.isNull()
@@ -309,19 +328,34 @@ class ImageViewer(QWidget):
 
     def mousePressEvent(self, event):
         self.setFocus(Qt.FocusReason.MouseFocusReason)
-        if self.image is not None and self.drag is None and event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
-            self.drag = event.position()
+        if self.drag is not None or event.buttons() != event.button():
+            self.cancel_pointer()
+            event.accept()
+        elif self.image is not None and event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
+            p = event.position()
+            self.drag = p
+            self.drag_start = (p.x(), p.y())
             self.drag_button = event.button()
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self.dragging = event.button() == Qt.MouseButton.MiddleButton
+            if self.dragging:
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
         else:
             super().mousePressEvent(event)
 
+    def mouseDoubleClickEvent(self, event):
+        # The first click may select; the second must not start a dangling drag.
+        self.cancel_pointer()
+        event.accept()
+
     def mouseReleaseEvent(self, event):
         if event.button() == self.drag_button:
-            self.drag = None
-            self.drag_button = None
-            self.unsetCursor()
+            p = event.position()
+            click = (self.drag_button == Qt.MouseButton.LeftButton and not self.dragging
+                     and not is_drag(self.drag_start, (p.x(), p.y())))
+            self.cancel_pointer()
+            if click:
+                self.clicked.emit((p.x(), p.y()))
             event.accept()
         else:
             super().mouseReleaseEvent(event)
@@ -331,11 +365,17 @@ class ImageViewer(QWidget):
         self.pointer = (p.x(), p.y())
         if self.drag is not None:
             if not (event.buttons() & self.drag_button):
-                self.drag = None
-                self.drag_button = None
-                self.unsetCursor()
+                self.cancel_pointer()
             else:
-                dx, dy = p.x()-self.drag.x(), p.y()-self.drag.y()
+                if not self.dragging and is_drag(self.drag_start, self.pointer):
+                    self.dragging = True
+                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    # Include the initial movement when the threshold is crossed.
+                    dx, dy = p.x()-self.drag_start[0], p.y()-self.drag_start[1]
+                elif self.dragging:
+                    dx, dy = p.x()-self.drag.x(), p.y()-self.drag.y()
+                else:
+                    dx, dy = 0, 0
                 if dx or dy:
                     self.set_transform(self.transform.panned(dx, dy))
                 self.drag = p

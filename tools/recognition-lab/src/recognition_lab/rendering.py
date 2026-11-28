@@ -6,6 +6,8 @@ import math
 import skia
 import numpy as np
 
+from .viewer_selection import bracket_dimensions, valid_bounds
+
 DETECTION_COLORS = {'grid': 0xff1683c7, 'mine counter': 0xffb84669, 'timer': 0xff8a5abd, 'reset button': 0xffad6200}
 
 COLORS = {'accepted': 0xff34d17b, 'rejected': 0xffff5c66, 'ambiguous': 0xffffc34d}
@@ -54,7 +56,7 @@ def label_typeface():
     raise RuntimeError('No usable system font is available for recognition labels')
 
 
-def draw(canvas, result, layers, selected=None, style=DESKTOP_STYLE, magnification=1.0, dpr=None):
+def draw(canvas, result, layers, selected=None, style=DESKTOP_STYLE, magnification=1.0, dpr=None, selected_geometry=None):
     if result is None:
         return
     dim = lambda size: style.dimension(size, magnification)
@@ -92,6 +94,8 @@ def draw(canvas, result, layers, selected=None, style=DESKTOP_STYLE, magnificati
             label(f'{d.name} {d.confidence:.2f}', d.box[0], d.box[1] if interactive else d.box[1]-dim(3), detection_color)
         if interactive: stroke.setStrokeWidth(dim(style.width))
     for grid in result.grids:
+        if selected_geometry is not None and grid is not selected_geometry:
+            continue
         if selected is not None and grid.detection_index != selected:
             continue
         status = 'ambiguous' if grid.decoding.status == 'ambiguous' else (grid.validation.status if grid.validation else 'rejected')
@@ -166,8 +170,12 @@ def draw(canvas, result, layers, selected=None, style=DESKTOP_STYLE, magnificati
         label(f'{len(ys)-1}×{len(xs)-1} {grid.decoding.status} / {grid.validation.status if grid.validation else "rejected"}', float(xs[0]), float(ys[0])-dim(4), color)
 
 
-def draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile_index, style, magnification, dpr):
-    """Draw recognition content in source coordinates, after the source image."""
+def draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile_index, style, magnification, dpr, selected_geometry=None):
+    """Draw viewer content; legacy selection filters are intentionally ignored.
+
+    ``selected`` and ``selected_geometry`` remain accepted for compatibility.
+    The selected grid still controls heatmaps; general vectors are unfiltered.
+    """
     heat = None
     tile_offset = (0, 0)
     if grid is not None and grid.phase_data:
@@ -176,7 +184,7 @@ def draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile
         elif mode == 'Phase coverage': heat = (phase['global'].weights > 0).astype(float)
         elif mode in ('Tile horizontal phase', 'Tile vertical phase'):
             observations = phase['observations']
-            o = observations[min(tile_index, len(observations)-1)] if observations else None
+            o = observations[tile_index] if 0 <= tile_index < len(observations) else None
             if o is not None and o.fields is not None:
                 axis = 0 if mode == 'Tile horizontal phase' else 2
                 heat = (np.arctan2(o.fields[axis+1], o.fields[axis]) / (2*np.pi) + .5) * o.fields[4]
@@ -196,4 +204,24 @@ def draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile
         canvas.clipRect(skia.Rect.MakeLTRB(*grid.crop.box))
         canvas.drawImageRect(hm, rect)
         canvas.restore()
-    draw(canvas, result, layers, selected, style, magnification, dpr)
+    # General annotations remain visible regardless of the current selection.
+    draw(canvas, result, layers, None, style, magnification, dpr)
+
+
+def draw_selection(canvas, bounds, magnification, dpr, opacity):
+    """Contrasting logical-pixel corner brackets in source-image coordinates."""
+    bounds = valid_bounds(bounds)
+    if bounds is None or opacity <= 0:
+        return
+    length, outer_width, inner_width = bracket_dimensions(magnification, dpr)
+    x1, y1, x2, y2 = bounds
+    dx, dy = min(length, (x2-x1)/2), min(length, (y2-y1)/2)
+    segments = [(x1, y1, x1+dx, y1), (x1, y1, x1, y1+dy),
+                (x2, y1, x2-dx, y1), (x2, y1, x2, y1+dy),
+                (x1, y2, x1+dx, y2), (x1, y2, x1, y2-dy),
+                (x2, y2, x2-dx, y2), (x2, y2, x2, y2-dy)]
+    alpha = round(255 * opacity) << 24
+    for color, width in ((alpha | 0x000000, outer_width), (alpha | 0xffffff, inner_width)):
+        paint = skia.Paint(Color=color, StrokeWidth=width, AntiAlias=True)
+        for segment in segments:
+            canvas.drawLine(*segment, paint)

@@ -134,3 +134,23 @@ def visible_pixel_grid(transform, image_size, viewport_size, dpr):
     return ((left, top, right, bottom),
             (math.ceil(left), math.floor(right)),
             (math.ceil(top), math.floor(bottom)))
+
+
+def fit_region(bounds, viewport_size, dpr, padding=24.0):
+    """Fit source bounds with logical-pixel padding and normal magnification limits."""
+    from .viewer_selection import valid_bounds
+    region = valid_bounds(bounds)
+    if region is None or not all(math.isfinite(v) and v > 0 for v in (*viewport_size, dpr)):
+        return None
+    if not math.isfinite(padding) or padding < 0:
+        return None
+    width, height = viewport_size
+    available_width, available_height = width - 2 * padding, height - 2 * padding
+    if available_width <= 0 or available_height <= 0:
+        return None
+    x1, y1, x2, y2 = region
+    fitted = ViewportTransform.fit(x2-x1, y2-y1, available_width, available_height)
+    magnification = min(MAX_MAGNIFICATION, max(MIN_MAGNIFICATION, physical_scale(fitted.scale, dpr)))
+    scale = logical_scale(magnification, dpr)
+    return ViewportTransform(scale, width/2 - ((x1+x2)/2)*scale,
+                             height/2 - ((y1+y2)/2)*scale)

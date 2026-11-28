@@ -1,13 +1,16 @@
 """Reusable, capture-independent inference pipeline."""
 from dataclasses import dataclass
 from pathlib import Path
+from itertools import count
 from time import perf_counter
 import numpy as np
 from PIL import Image
 from .results import Detection, GeometryResult, RecognitionResult, crop_box
+from .provenance import DetectionProvenance, GeometryProvenance, require_settings
 
 ROOT = Path(__file__).resolve().parents[2]
 GEOMETRY_ROOT = ROOT.parents[1] / 'experiments' / 'grid-geometry'
+_MODEL_IDS = count(1)
 
 
 @dataclass(frozen=True)
@@ -36,25 +39,27 @@ class Pipeline:
     def __init__(self):
         self.yolo = None
         self.yolo_path = None
+        self.yolo_id = None
         self.phase = None
         self.phase_path = None
+        self.phase_id = None
 
     def load_phase(self, path):
         import torch
         from grid_geometry.phase.model import PhaseGridUNet, load_phase_weights
-        path = Path(path)
+        path = Path(path).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f'PhaseGridUNet model not found: {path}')
         state = torch.load(path, map_location='cpu', weights_only=False)
         model = PhaseGridUNet()
         load_phase_weights(model, state)
-        self.phase, self.phase_path = model, path
+        self.phase, self.phase_path, self.phase_id = model, path, next(_MODEL_IDS)
 
     def unload_phase(self):
-        self.phase = self.phase_path = None
+        self.phase = self.phase_path = self.phase_id = None
 
     def load_yolo(self, path):
-        path = Path(path)
+        path = Path(path).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f'YOLO model not found: {path}')
         from ultralytics import YOLO
@@ -63,21 +68,37 @@ class Pipeline:
         expected = ['game_region', 'grid', 'mine_counter', 'reset_button', 'timer']
         if [names[i] for i in range(len(names))] != expected:
             raise ValueError(f'Unexpected YOLO class order: {names}')
-        self.yolo, self.yolo_path = model, path
+        self.yolo, self.yolo_path, self.yolo_id = model, path, next(_MODEL_IDS)
 
     def unload_yolo(self):
-        self.yolo = self.yolo_path = None
+        self.yolo = self.yolo_path = self.yolo_id = None
 
     def detect(self, image, settings):
         if self.yolo is None:
             raise RuntimeError('Load a YOLO model first')
+        require_settings(settings, 'detection')
+        device = device_for(settings.device)
+        provenance = DetectionProvenance(settings.device, device, str(self.yolo_path) if self.yolo_path is not None else None,
+                                         self.yolo_id, settings.imgsz, settings.confidence)
         start = perf_counter()
         result = self.yolo.predict(source=image, imgsz=settings.imgsz, conf=settings.confidence,
-                                   device=device_for(settings.device), verbose=False)[0]
+                                   device=device, verbose=False)[0]
         detections = [Detection(result.names[int(c)], float(p), tuple(map(float, b)))
                       for b, p, c in zip(result.boxes.xyxy.cpu().numpy(), result.boxes.conf.cpu().numpy(), result.boxes.cls.cpu().numpy())]
         return RecognitionResult(detections, timings={'YOLO wall ms': (perf_counter()-start)*1000,
-                                                       **{f'YOLO reported {k} ms': v for k, v in result.speed.items()}})
+                                                       **{f'YOLO reported {k} ms': v for k, v in result.speed.items()}},
+                                 detection_provenance=provenance)
+
+    def _geometry_output(self, result, settings, device):
+        """Create stage metadata without copying detection objects or old geometry."""
+        tiled = settings.mode == 'tiled'
+        provenance = GeometryProvenance(
+            settings.device, device, str(self.phase_path) if self.phase_path is not None else None,
+            self.phase_id, settings.padding, settings.mode,
+            tile=settings.tile if tiled else None, overlap=settings.overlap if tiled else None,
+            whole_input_size=(384, 384) if not tiled and any(d.name == 'grid' for d in result.detections) else None)
+        return RecognitionResult(list(result.detections), [], dict(result.timings),
+                                 result.detection_provenance, provenance)
 
     def geometry(self, image, result, settings):
         """Run the phase model on a resized crop, preserving diagnostic proposals."""
@@ -90,13 +111,14 @@ class Pipeline:
         from grid_geometry.preprocessing import ImageTransform, preprocess_image
         if self.phase is None:
             raise RuntimeError('Load a PhaseGridUNet model first')
+        require_settings(settings, 'geometry')
         if settings.mode == 'tiled':
             return self.phase_tiles(image, result, settings)
         if settings.mode != 'whole':
             raise ValueError('PhaseGridUNet supports whole or tiled mode')
         device = device_for(settings.device)
         model = self.phase.to(device).eval()
-        output = RecognitionResult(list(result.detections), [], dict(result.timings))
+        output = self._geometry_output(result, settings, device)
         started = perf_counter()
         for index, detection in enumerate(result.detections):
             if detection.name != 'grid':
@@ -156,11 +178,14 @@ class Pipeline:
         from grid_geometry.phase.tiles import observe_tiles
         from grid_geometry.phase.global_geometry import recognize_global
         from grid_geometry.preprocessing import ImageTransform
-        if settings.tile != 384:
-            raise ValueError('Phase tiled mode requires 384 pixel tiles')
+        if self.phase is None:
+            raise RuntimeError('Load a PhaseGridUNet model first')
+        require_settings(settings, 'geometry')
+        if settings.mode != 'tiled':
+            raise ValueError('Tiled inference requires tiled mode')
         device = device_for(settings.device)
         model = self.phase.to(device).eval()
-        output = RecognitionResult(list(result.detections), [], dict(result.timings))
+        output = self._geometry_output(result, settings, device)
         start = perf_counter()
         for index, detection in enumerate(result.detections):
             if detection.name != 'grid':

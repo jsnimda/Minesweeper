@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 import math
 import numpy as np
+from .provenance import DetectionProvenance, GeometryProvenance
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,8 @@ class RecognitionResult:
     detections: list[Detection] = field(default_factory=list)
     grids: list[GeometryResult] = field(default_factory=list)
     timings: dict = field(default_factory=dict)
+    detection_provenance: DetectionProvenance | None = None
+    geometry_provenance: GeometryProvenance | None = None
 
 
 def validate_region(region, width, height):

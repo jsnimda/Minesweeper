@@ -1,15 +1,19 @@
 import sys
 from pathlib import Path
 from time import perf_counter
-import numpy as np
 import skia
 from PIL import Image
 from PySide6.QtCore import QEvent, QSettings, QSize, Qt, QThread, Signal, QTimer, Slot
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPalette, QPainter
-from PySide6.QtWidgets import (QApplication, QDialog, QPushButton, QStackedWidget, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QDockWidget, QTabWidget, QToolButton, QFileDialog, QComboBox, QLabel, QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QTextEdit, QListWidget, QMessageBox, QInputDialog, QScrollArea, QToolBar, QSizePolicy, QMenu)
+from PySide6.QtWidgets import (QApplication, QDialog, QPushButton, QStackedWidget, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QDockWidget, QTabWidget, QToolButton, QFileDialog, QComboBox, QLabel, QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QTextEdit, QListWidget, QTreeWidget, QTreeWidgetItem, QHeaderView, QMessageBox, QInputDialog, QScrollArea, QToolBar, QSizePolicy, QMenu)
 from .capture import Frame, capture_frame, monitors
-from .pipeline import Pipeline, Settings, ROOT, GEOMETRY_ROOT
-from .rendering import draw, draw_viewer_visualization, RecognitionStyle
+from .pipeline import Pipeline, Settings, ROOT, GEOMETRY_ROOT, device_for
+from .provenance import validation_errors, stage_summary, tile_selection
+from .recognition_state import RecognitionSelection
+from .explorer import explorer_items
+from .viewer_selection import hit_detection, image_point, selection_region
+from .inspector import inspector_sections, property_report
+from .rendering import draw, draw_viewer_visualization, draw_selection, RecognitionStyle
 from .viewer import ImageViewer, surface_pixmap
 from .preferences import DEFAULTS, PreferencesDialog
 from .appearance import apply_appearance
@@ -119,7 +123,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle('Minesweeper Recognition Lab')
         self.resize(1450, 850)
-        self.pipeline = Pipeline(); self.frame = None; self.result = None
+        self.pipeline = Pipeline(); self.frame = None; self.recognition = RecognitionSelection()
         self.generation = 0; self.worker = None; self.folder_files = []; self.capture_in_progress = False
         self.app_settings = QSettings('Minesweeper Recognition Lab', 'Recognition Lab')
         self.preferences = self.read_preferences()
@@ -127,7 +131,9 @@ class MainWindow(QMainWindow):
         self.focus_state = None
         self.folder_open = False
         self.overlay = Overlay(self)
+        self._tile_grid = None
         self.canvas = ImageViewer()
+        self.canvas.clicked.connect(self.viewer_clicked)
         self.workspace = QStackedWidget()
         self.setCentralWidget(self.workspace)
         self.viewer_container = QWidget()
@@ -205,7 +211,13 @@ class MainWindow(QMainWindow):
         self.images_empty = QLabel('No folder open.'); self.images_empty.setWordWrap(True)
         self.open_folder_empty = QToolButton(); self.open_folder_empty.setDefaultAction(self.actions['open_folder'])
         self.open_folder_empty.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.grid_list = QListWidget(); self.grid_list.currentRowChanged.connect(self.selection_changed)
+        self.result_tree = QTreeWidget()
+        self.result_tree.setColumnCount(2); self.result_tree.setHeaderLabels(['Result', 'Summary'])
+        self.result_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.result_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.result_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.result_tree.currentItemChanged.connect(self.selection_changed)
+        self.result_tree.itemDoubleClicked.connect(self.navigate_result)
         self.results_empty = QLabel('No recognition results available.'); self.results_empty.setWordWrap(True)
         explorer_layout.addWidget(images_heading)
         explorer_layout.addWidget(self.images_empty)
@@ -214,15 +226,31 @@ class MainWindow(QMainWindow):
         explorer_layout.addSpacing(8)
         explorer_layout.addWidget(results_heading)
         explorer_layout.addWidget(self.results_empty)
-        explorer_layout.addWidget(self.grid_list, 1)
+        explorer_layout.addWidget(self.result_tree, 1)
         explorer_layout.addStretch(1)
         self.explorer_layout = explorer_layout
         self.explorer_dock = self.make_dock('Explorer', explorer, Qt.DockWidgetArea.LeftDockWidgetArea)
 
         tabs = QTabWidget()
-        self.inspect = QTextEdit(); self.inspect.setReadOnly(True)
-        self.inspect.setPlaceholderText('Run recognition to inspect results.')
-        tabs.addTab(self.inspect, 'Inspect')
+        inspect_panel = QWidget(); inspect_layout = QVBoxLayout(inspect_panel)
+        self.inspect_empty = QLabel('Select a recognition result to inspect it.'); self.inspect_empty.setWordWrap(True)
+        self.inspect = QTreeWidget(); self.inspect.setColumnCount(2)
+        self.inspect.setHeaderLabels(['Property', 'Value'])
+        self.inspect.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.inspect.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.inspect.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.inspect.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.inspect.customContextMenuRequested.connect(self.inspect_context_menu)
+        copy_value = QAction('Copy property value', self.inspect)
+        copy_value.setShortcut(QKeySequence(QKeySequence.StandardKey.Copy))
+        copy_value.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        copy_value.triggered.connect(self.copy_inspect_value)
+        self.inspect.addAction(copy_value)
+        self.copy_report_button = QPushButton('Copy property report')
+        self.copy_report_button.clicked.connect(self.copy_inspect_report)
+        inspect_layout.addWidget(self.inspect_empty); inspect_layout.addWidget(self.inspect, 1)
+        inspect_layout.addWidget(self.copy_report_button)
+        tabs.addTab(inspect_panel, 'Inspect')
         layers_panel = QWidget(); layers_form = QFormLayout(layers_panel)
         self.image_sampling = QComboBox()
         self.image_sampling.addItem('Nearest neighbor', 'nearest')
@@ -279,8 +307,11 @@ class MainWindow(QMainWindow):
         self.conf = QDoubleSpinBox(); self.conf.setRange(0,1); self.conf.setSingleStep(.05); self.conf.setValue(.25); form.addRow('Confidence', self.conf)
         self.padding = self.spin(20,0,2000); form.addRow('Crop padding (px)', self.padding)
         self.mode = QComboBox(); self.mode.addItems(['whole','tiled']); form.addRow('Geometry mode', self.mode)
-        self.tile = self.spin(384,8,4096); self.overlap = self.spin(96,0,4095)
+        self.tile = self.spin(384,384,384); self.overlap = self.spin(96,0,383)
         form.addRow('Tile size', self.tile); form.addRow('Tile overlap', self.overlap)
+        self.settings_status = QLabel(); self.settings_status.setWordWrap(True)
+        self.settings_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        form.addRow('Completed runs', self.settings_status)
         self.mode.currentTextChanged.connect(self.update_tile_controls)
         self.update_tile_controls(self.mode.currentText())
         self.backend = QComboBox(); self.backend.addItems(['MSS', 'Qt']); self.backend.currentTextChanged.connect(self.refresh_monitors)
@@ -339,8 +370,16 @@ class MainWindow(QMainWindow):
         self.refresh_monitors()
         self.apply_preferences()
         self.restore_workspace()
+        for widget in (self.device, self.mode):
+            widget.currentIndexChanged.connect(self.pending_settings_changed)
+        for widget in (self.imgsz, self.conf, self.padding, self.tile, self.overlap):
+            widget.valueChanged.connect(self.pending_settings_changed)
+        for widget in (self.yolo_path, self.phase_path):
+            widget.textChanged.connect(self.pending_settings_changed)
         self.update_empty_states()
         self.update_action_states()
+        self.update_inspector()
+        self.redraw()
         QApplication.instance().paletteChanged.connect(self.update_action_icons)
         QApplication.instance().installEventFilter(self)
 
@@ -554,17 +593,11 @@ class MainWindow(QMainWindow):
         self.images_empty.setVisible(not self.folder_files)
         self.open_folder_empty.setVisible(not self.folder_files)
         self.file_list.setVisible(bool(self.folder_files))
-        self.results_empty.setText('No detected grids.' if self.result is not None else 'No recognition results available.')
-        self.results_empty.setVisible(self.grid_list.count() == 0)
-        self.grid_list.setVisible(self.grid_list.count() != 0)
+        self.results_empty.setText('No detections or geometry results.' if self.result is not None else 'No recognition results available.')
+        self.results_empty.setVisible(self.result_tree.topLevelItemCount() == 0)
+        self.result_tree.setVisible(self.result_tree.topLevelItemCount() != 0)
         self.explorer_layout.setStretch(self.explorer_layout.count() - 1,
-                                        0 if self.folder_files or self.grid_list.count() else 1)
-        if self.result is None:
-            self.inspect.setPlaceholderText('Run recognition to inspect results.')
-        elif self.grid_list.count() and self.selected_detection() is None:
-            self.inspect.setPlaceholderText('Select a detected grid to inspect it.')
-        else:
-            self.inspect.setPlaceholderText('No result properties available.')
+                                        0 if self.folder_files or self.result_tree.topLevelItemCount() else 1)
 
     def update_action_states(self):
         busy = self.worker is not None
@@ -579,15 +612,23 @@ class MainWindow(QMainWindow):
         yolo_loaded = self.pipeline.yolo is not None
         phase_loaded = self.pipeline.phase is not None
         idle = not busy and not capturing
-        self.actions['yolo'].setEnabled(image and yolo_loaded and idle)
-        self.actions['geometry'].setEnabled(image and bool(grids) and phase_loaded and idle)
-        self.actions['all'].setEnabled(image and yolo_loaded and phase_loaded and idle)
+        settings = self.settings()
+        device_errors = []
+        if settings.device != 'auto':
+            try: device_for(settings.device)
+            except (RuntimeError, ValueError) as exc: device_errors.append(str(exc))
+        errors = {key: list(validation_errors(settings, stage)) + device_errors
+                  for key, stage in (('yolo', 'detection'), ('geometry', 'geometry'), ('all', 'all'))}
+        self.actions['yolo'].setEnabled(image and yolo_loaded and idle and not errors['yolo'])
+        self.actions['geometry'].setEnabled(image and bool(grids) and phase_loaded and idle and not errors['geometry'])
+        self.actions['all'].setEnabled(image and yolo_loaded and phase_loaded and idle and not errors['all'])
         common = ([] if image else ['an image']) + ([] if idle else ['the current operation to finish'])
         self.update_command_tips({
-            'yolo': common + ([] if yolo_loaded else ['the YOLO model']),
-            'geometry': common + ([] if grids else ['detected grids']) + ([] if phase_loaded else ['the PhaseGridUNet model']),
-            'all': common + ([] if yolo_loaded else ['the YOLO model']) + ([] if phase_loaded else ['the PhaseGridUNet model']),
+            'yolo': common + ([] if yolo_loaded else ['the YOLO model']) + errors['yolo'],
+            'geometry': common + ([] if grids else ['detected grids']) + ([] if phase_loaded else ['the PhaseGridUNet model']) + errors['geometry'],
+            'all': common + ([] if yolo_loaded else ['the YOLO model']) + ([] if phase_loaded else ['the PhaseGridUNet model']) + errors['all'],
         })
+        self.update_settings_status(settings)
         self.actions['overlay'].setEnabled(not capturing and ((result and mapped) or self.overlay.isVisible()))
         self.file_list.setEnabled(not capturing)
         for key in ('fit', 'actual', 'grid'): self.actions[key].setEnabled(image)
@@ -597,6 +638,19 @@ class MainWindow(QMainWindow):
         self.actions['unload_yolo'].setEnabled(not busy and not capturing and self.pipeline.yolo is not None)
         self.actions['unload_phase'].setEnabled(not busy and not capturing and self.pipeline.phase is not None)
         self.actions['exit_focus'].setEnabled(self.focus_state is not None)
+
+    def pending_settings_changed(self, *args):
+        self.update_action_states()
+
+    def update_settings_status(self, settings):
+        result = self.result
+        detection = result.detection_provenance if result is not None else None
+        geometry = result.geometry_provenance if result is not None else None
+        self.settings_status.setText('Pending configuration: controls above\n\n' +
+            stage_summary('Detection', settings, detection, self.pipeline.yolo_path,
+                          self.pipeline.yolo_id, self.yolo_path.text()) + '\n\n' +
+            stage_summary('Geometry', settings, geometry, self.pipeline.phase_path,
+                          self.pipeline.phase_id, self.phase_path.text()))
 
     def update_tile_controls(self, mode):
         for widget in (self.tile, self.overlap): widget.setEnabled(mode == 'tiled')
@@ -617,19 +671,36 @@ class MainWindow(QMainWindow):
         result = self.result
         grid = self.selected_grid()
         layers = self.layers()
-        selected = self.selected_detection()
+        bounds = selection_region(self.recognition.snapshot, self.recognition.selected, layers)
+        phase = grid.phase_data if grid is not None else None
+        self.heatmap.setEnabled(bool(phase))
+        limits, index = tile_selection(grid, self._tile_grid, self.tile_inspect.value())
+        self.tile_inspect.blockSignals(True)
+        try:
+            self.tile_inspect.setSpecialValueText('Unavailable' if limits is None else '')
+            self.tile_inspect.setRange(*(limits if limits is not None else (0, 0)))
+            self.tile_inspect.setValue(index)
+            self._tile_grid = grid
+        finally:
+            self.tile_inspect.blockSignals(False)
+        self.tile_inspect.setEnabled(limits is not None and self.heatmap.currentText().startswith('Tile '))
         mode = self.heatmap.currentText()
         tile = self.tile_inspect.value()
         style = RecognitionStyle(self.stroke_mode.currentData(), self.stroke_width.value(), self.vector_opacity.value() / 100)
-        self.canvas.set_visualization(lambda canvas, magnification, dpr: draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile, style, magnification, dpr))
+        def visualize(canvas, magnification, dpr):
+            draw_viewer_visualization(canvas, result, layers, None, grid, mode, tile, style, magnification, dpr)
+            draw_selection(canvas, bounds, magnification, dpr, style.opacity)
+        self.canvas.set_visualization(visualize)
         self.overlay.update()
     def change_opacity(self, value): self.overlay.setWindowOpacity(value)
+    @property
+    def result(self):
+        return self.recognition.snapshot.result if self.recognition.snapshot is not None else None
+
     def selected_detection(self):
-        item = self.grid_list.currentItem()
-        return item.data(Qt.ItemDataRole.UserRole) if item else None
+        return self.recognition.detection_index()
     def selected_grid(self):
-        if not self.result: return None
-        return next ( (g for g in self.result.grids if g.detection_index == self.selected_detection()), None)
+        return self.recognition.grid()
     def actual_size(self): self.canvas.actual_size()
     def choose_path(self, field):
         path, _ = QFileDialog.getOpenFileName(self, 'Choose file', field.text())
@@ -640,8 +711,9 @@ class MainWindow(QMainWindow):
             for label, value in monitors(self.backend.currentText()): self.monitor.addItem(label, value)
         except Exception as exc: self.diagnostics.setPlainText(f'Monitor enumeration failed: {exc}')
     def set_frame(self, frame):
-        self.generation += 1; self.overlay.hide(); self.frame = frame; self.result = None
-        self.canvas.set_image(frame.image); self.grid_list.clear(); self.show_diagnostics()
+        self.generation += 1; self.overlay.hide(); self.frame = frame; self.recognition.replace(None)
+        self.canvas.set_image(frame.image)
+        self.rebuild_result_tree(); self.show_diagnostics(); self.redraw()
         self.workspace.setCurrentWidget(self.viewer_container); self.canvas.fit()
         self.image_status.setText(f'Image: {frame.image.width} × {frame.image.height}'); self.cursor_status.setText('Cursor: —')
         self.update_empty_states(); self.update_action_states()
@@ -732,44 +804,141 @@ class MainWindow(QMainWindow):
         if self.worker is not None: return
         if self.frame is None: QMessageBox.warning(self,'Recognition','Open or capture an image first'); return
         image = self.frame.image; settings = self.settings(); previous = self.result
-        if mode == 'geometry' and previous is None: QMessageBox.warning(self,'Recognition','Run YOLO first'); return
+        if mode == 'geometry' and (previous is None or not any(d.name == 'grid' for d in previous.detections)):
+            QMessageBox.warning(self,'Recognition','Run detection and obtain a grid first'); return
+        stage = {'yolo': 'detection', 'geometry': 'geometry', 'all': 'all'}[mode]
+        errors = list(validation_errors(settings, stage))
+        try: device_for(settings.device)
+        except (RuntimeError, ValueError) as exc: errors.append(str(exc))
+        if errors:
+            QMessageBox.warning(self, 'Invalid settings', '\n'.join(errors)); return
         def action():
             start = perf_counter()
             result = self.pipeline.detect(image, settings) if mode in ('all','yolo') else previous
             if mode in ('all','geometry'): result = self.pipeline.geometry(image, result, settings)
             result.timings['job wall ms'] = (perf_counter()-start)*1000
             return result
-        self.start_worker(action, self.accept_result)
-    def accept_result(self, result):
-        self.result = result; self.grid_list.clear()
-        for i,d in enumerate(result.detections):
-            if d.name == 'grid':
-                self.grid_list.addItem(f'Grid {i}: {d.confidence:.3f}'); self.grid_list.item(self.grid_list.count()-1).setData(Qt.ItemDataRole.UserRole,i)
-        if self.grid_list.count(): self.grid_list.setCurrentRow(0)
+        self.start_worker(action, lambda result: self.accept_result(result, geometry_update=mode == 'geometry'))
+    def accept_result(self, result, geometry_update=False):
+        self.canvas.cancel_pointer()
+        self.recognition.replace(result, geometry_update=geometry_update, fallback_to_first_grid=True)
+        self.rebuild_result_tree()
         self.show_diagnostics(); self.redraw(); self.update_empty_states(); self.update_action_states()
-    def selection_changed(self, *args):
+
+    def rebuild_result_tree(self):
+        self.result_tree.blockSignals(True)
+        try:
+            self.result_tree.clear()
+            selected_item = None
+            def add_item(parent, data):
+                nonlocal selected_item
+                item = QTreeWidgetItem(parent, [data.label, data.summary])
+                item.setData(0, Qt.ItemDataRole.UserRole, data.identity)
+                item.setToolTip(0, data.label); item.setToolTip(1, data.summary)
+                if data.identity == self.recognition.selected:
+                    selected_item = item
+                for child in data.children:
+                    add_item(item, child)
+            for data in explorer_items(self.recognition.snapshot):
+                add_item(self.result_tree, data)
+            self.result_tree.expandAll()
+            if selected_item is not None:
+                self.result_tree.setCurrentItem(selected_item)
+                self.result_tree.scrollToItem(selected_item)
+        finally:
+            self.result_tree.blockSignals(False)
+
+    def selection_changed(self, current, previous):
+        identity = current.data(0, Qt.ItemDataRole.UserRole) if current is not None else None
+        self.recognition.select(identity)
         self.show_diagnostics(); self.redraw(); self.update_empty_states()
+
+    def viewer_clicked(self, point):
+        # Resolve on release against the current snapshot, never an ID saved at press.
+        if image_point(self.canvas.transform, point, self.canvas.image_size) is None:
+            return
+        identity = hit_detection(self.recognition.snapshot, self.canvas.transform, point,
+                                 self.canvas.image_size, self.layers().get('detections') and self.vector_opacity.value() > 0)
+        self.recognition.select(identity)
+        self.sync_result_tree_selection()
+        self.show_diagnostics(); self.redraw(); self.update_empty_states()
+
+    def sync_result_tree_selection(self):
+        def find(parent):
+            for index in range(parent.childCount()):
+                item = parent.child(index)
+                if item.data(0, Qt.ItemDataRole.UserRole) == self.recognition.selected:
+                    return item
+                found = find(item)
+                if found is not None:
+                    return found
+            return None
+        item = find(self.result_tree.invisibleRootItem()) if self.recognition.selected is not None else None
+        self.result_tree.blockSignals(True)
+        try:
+            self.result_tree.setCurrentItem(item)
+            if item is None:
+                self.result_tree.clearSelection()
+            else:
+                parent = item.parent()
+                while parent is not None:
+                    parent.setExpanded(True)
+                    parent = parent.parent()
+                self.result_tree.scrollToItem(item)
+        finally:
+            self.result_tree.blockSignals(False)
+
+    def navigate_result(self, item, column):
+        identity = item.data(0, Qt.ItemDataRole.UserRole)
+        bounds = selection_region(self.recognition.snapshot, identity)
+        if bounds is not None:
+            self.canvas.fit_region(bounds)
+
+    def update_inspector(self):
+        sections = inspector_sections(self.recognition.snapshot, self.recognition.selected)
+        self.inspect.clear()
+        for section in sections:
+            heading = QTreeWidgetItem(self.inspect, [section.title, ''])
+            font = heading.font(0); font.setBold(True); heading.setFont(0, font)
+            for prop in section.properties:
+                item = QTreeWidgetItem(heading, [prop.name, prop.value])
+                item.setData(1, Qt.ItemDataRole.UserRole, prop.value)
+                item.setToolTip(0, prop.name); item.setToolTip(1, prop.value)
+        self.inspect.expandAll()
+        self.inspect.setVisible(bool(sections)); self.inspect_empty.setVisible(not sections)
+        self.copy_report_button.setEnabled(bool(sections))
+
+    def copy_inspect_value(self):
+        item = self.inspect.currentItem()
+        value = item.data(1, Qt.ItemDataRole.UserRole) if item is not None else None
+        if value is not None:
+            QApplication.clipboard().setText(value)
+
+    def copy_inspect_report(self):
+        sections = inspector_sections(self.recognition.snapshot, self.recognition.selected)
+        if sections:
+            QApplication.clipboard().setText(property_report(sections))
+
+    def inspect_context_menu(self, position):
+        item = self.inspect.itemAt(position)
+        if item is None or item.data(1, Qt.ItemDataRole.UserRole) is None:
+            return
+        self.inspect.setCurrentItem(item)
+        menu = QMenu(self.inspect)
+        menu.addAction('Copy property value', self.copy_inspect_value)
+        menu.exec(self.inspect.viewport().mapToGlobal(position))
+
     def show_diagnostics(self):
+        self.update_inspector()
         if not self.frame: return
         details = self.frame.diagnostics
-        properties = ''
         timing = ''
         if self.result:
-            properties = 'Detections:\n' + ('\n'.join(f'{d.name} {d.confidence:.3f} {tuple(round(x,1) for x in d.box)}' for d in self.result.detections) or 'No detections.')
-            if self.grid_list.count() and self.selected_detection() is None:
-                properties += '\n\nSelect a detected grid to inspect it.'
             timing = '\n'.join(f'{k}: {v:.1f}' for k,v in self.result.timings.items())
             grid = self.selected_grid()
             if grid:
-                validation_status = grid.validation.status if grid.validation else 'no hypothesis'
-                validation_reasons = grid.validation.reasons if grid.validation else ('no hypothesis',)
-                properties += f'\n\nCrop: {grid.crop.box}; clipped: {grid.crop.clipped}\nDecoder: {grid.decoding.status}\nStrict: {validation_status}\nReasons: {", ".join(validation_reasons) or "none"}\nCompleteness may be uncertain, especially at image boundaries.\n'
-                for i,(xs,ys,score) in enumerate(grid.hypotheses):
-                    label = 'accepted board' if grid.validation and grid.validation.accepted and i == 0 else 'unvalidated candidate'
-                    properties += f'\nCandidate {i+1} ({label}): {len(ys)-1} rows × {len(xs)-1} columns; pitch {np.mean(np.diff(xs)):.2f} × {np.mean(np.diff(ys)):.2f}; origin {xs[0]:.2f}, {ys[0]:.2f}; score {score:.4f}'
                 details += '\n\nSelected grid:\n' + '\n'.join(f'{k}: {v}' for k,v in grid.diagnostics.items())
                 timing += '\n\nSelected grid:\n' + '\n'.join(f'{k}: {v:.1f}' for k,v in grid.timings.items())
-        self.inspect.setPlainText(properties)
         self.diagnostics.setPlainText(details)
         self.performance.setPlainText(timing)
     def toggle_overlay(self):
