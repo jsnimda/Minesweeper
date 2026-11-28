@@ -13,6 +13,8 @@ class DetectionProvenance:
     requested_image_size: int
     confidence: float
     effective_image_size: tuple[int, int] | None = None
+    checkpoint_sha256: str | None = None
+    fingerprint_status: str = 'unavailable'
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,8 @@ class GeometryProvenance:
     tile: int | None = None
     overlap: int | None = None
     whole_input_size: tuple[int, int] | None = None
+    checkpoint_sha256: str | None = None
+    fingerprint_status: str = 'unavailable'
 
 
 def validation_errors(settings, stage, available_devices=None):
@@ -118,7 +122,8 @@ def stage_summary(label, settings, provenance, loaded_path, model_id, editable_p
     mismatch = stage_mismatches(settings, provenance, loaded_path, model_id, editable_path)
     state = 'Matches pending settings' if not mismatch else 'Differs: ' + ', '.join(mismatch)
     common = (f'requested device {provenance.requested_device}; resolved device {provenance.resolved_device}; '
-              f'checkpoint {provenance.checkpoint_path or "unavailable"}; load ID {provenance.model_id}')
+              f'checkpoint {provenance.checkpoint_path or "unavailable"}; load ID {provenance.model_id}; '
+              f'SHA-256 {provenance.checkpoint_sha256 or provenance.fingerprint_status}')
     if isinstance(provenance, DetectionProvenance):
         detail = f'requested size {provenance.requested_image_size}; confidence {provenance.confidence}'
     else:

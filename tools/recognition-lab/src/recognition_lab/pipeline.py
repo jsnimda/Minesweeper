@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 from .results import Detection, GeometryResult, RecognitionResult, crop_box
 from .provenance import DetectionProvenance, GeometryProvenance, require_settings
+from .model_identity import fingerprint_before_load, identity_after_load
 
 ROOT = Path(__file__).resolve().parents[2]
 GEOMETRY_ROOT = ROOT.parents[1] / 'experiments' / 'grid-geometry'
@@ -40,9 +41,11 @@ class Pipeline:
         self.yolo = None
         self.yolo_path = None
         self.yolo_id = None
+        self.yolo_identity = None
         self.phase = None
         self.phase_path = None
         self.phase_id = None
+        self.phase_identity = None
 
     def load_phase(self, path):
         import torch
@@ -50,28 +53,32 @@ class Pipeline:
         path = Path(path).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f'PhaseGridUNet model not found: {path}')
+        fingerprint, signature, status = fingerprint_before_load(path)
         state = torch.load(path, map_location='cpu', weights_only=False)
         model = PhaseGridUNet()
         load_phase_weights(model, state)
-        self.phase, self.phase_path, self.phase_id = model, path, next(_MODEL_IDS)
+        identity = identity_after_load(path, fingerprint, signature, status, model)
+        self.phase, self.phase_path, self.phase_id, self.phase_identity = model, path, next(_MODEL_IDS), identity
 
     def unload_phase(self):
-        self.phase = self.phase_path = self.phase_id = None
+        self.phase = self.phase_path = self.phase_id = self.phase_identity = None
 
     def load_yolo(self, path):
         path = Path(path).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f'YOLO model not found: {path}')
         from ultralytics import YOLO
+        fingerprint, signature, status = fingerprint_before_load(path)
         model = YOLO(str(path))
         names = model.names
         expected = ['game_region', 'grid', 'mine_counter', 'reset_button', 'timer']
         if [names[i] for i in range(len(names))] != expected:
             raise ValueError(f'Unexpected YOLO class order: {names}')
-        self.yolo, self.yolo_path, self.yolo_id = model, path, next(_MODEL_IDS)
+        identity = identity_after_load(path, fingerprint, signature, status, getattr(model, 'model', model))
+        self.yolo, self.yolo_path, self.yolo_id, self.yolo_identity = model, path, next(_MODEL_IDS), identity
 
     def unload_yolo(self):
-        self.yolo = self.yolo_path = self.yolo_id = None
+        self.yolo = self.yolo_path = self.yolo_id = self.yolo_identity = None
 
     def detect(self, image, settings):
         if self.yolo is None:
@@ -79,7 +86,9 @@ class Pipeline:
         require_settings(settings, 'detection')
         device = device_for(settings.device)
         provenance = DetectionProvenance(settings.device, device, str(self.yolo_path) if self.yolo_path is not None else None,
-                                         self.yolo_id, settings.imgsz, settings.confidence)
+                                         self.yolo_id, settings.imgsz, settings.confidence,
+                                         checkpoint_sha256=self.yolo_identity.sha256 if self.yolo_identity else None,
+                                         fingerprint_status=self.yolo_identity.fingerprint_status if self.yolo_identity else 'unavailable')
         start = perf_counter()
         result = self.yolo.predict(source=image, imgsz=settings.imgsz, conf=settings.confidence,
                                    device=device, verbose=False)[0]
@@ -96,7 +105,9 @@ class Pipeline:
             settings.device, device, str(self.phase_path) if self.phase_path is not None else None,
             self.phase_id, settings.padding, settings.mode,
             tile=settings.tile if tiled else None, overlap=settings.overlap if tiled else None,
-            whole_input_size=(384, 384) if not tiled and any(d.name == 'grid' for d in result.detections) else None)
+            whole_input_size=(384, 384) if not tiled and any(d.name == 'grid' for d in result.detections) else None,
+            checkpoint_sha256=self.phase_identity.sha256 if self.phase_identity else None,
+            fingerprint_status=self.phase_identity.fingerprint_status if self.phase_identity else 'unavailable')
         return RecognitionResult(list(result.detections), [], dict(result.timings),
                                  result.detection_provenance, provenance)
 

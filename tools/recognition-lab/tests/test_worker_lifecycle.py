@@ -34,13 +34,13 @@ def test_failed_worker_does_not_replace_snapshot(monkeypatch):
     warnings = []
     monkeypatch.setattr('recognition_lab.ui.QMessageBox',
                         SimpleNamespace(warning=lambda parent, title, error: warnings.append(error)))
-    window = SimpleNamespace(guard_generation=True, generation=4,
-                             worker_done=lambda result: state.replace(result))
+    window = SimpleNamespace(generation=4, operation=(1, 'recognition', True, lambda result: state.replace(result)),
+                             log_event=lambda *args: None)
     def fail():
         raise RuntimeError('inference failed')
-    worker = SimpleNamespace(fn=fail, generation=4,
-                             succeeded=SignalSpy(lambda result, generation: MainWindow.worker_succeeded(window, result, generation)),
-                             failed=SignalSpy(lambda error: MainWindow.worker_failed(window, error)))
+    worker = SimpleNamespace(fn=fail, generation=4, job=1,
+                             succeeded=SignalSpy(lambda *args: MainWindow.worker_succeeded(window, *args)),
+                             failed=SignalSpy(lambda *args: MainWindow.worker_failed(window, *args)))
     Worker.run(worker)
     assert not worker.succeeded.calls
     assert warnings == ['RuntimeError: inference failed']
@@ -52,16 +52,51 @@ def test_obsolete_worker_success_does_not_replace_current_snapshot():
     state = RecognitionSelection(); current = result_fixture()
     state.replace(current); selected = state.snapshot.roots[0].id; state.select(selected)
     before = state.snapshot
-    window = SimpleNamespace(guard_generation=True, generation=5,
-                             worker_done=lambda result: state.replace(result))
+    window = SimpleNamespace(generation=5, operation=(1, 'recognition', True, lambda result: state.replace(result)),
+                             log_event=lambda *args: None)
     stale = result_fixture()
-    worker = SimpleNamespace(fn=lambda: stale, generation=4,
-                             succeeded=SignalSpy(lambda result, generation: MainWindow.worker_succeeded(window, result, generation)),
-                             failed=SignalSpy(lambda error: None))
+    worker = SimpleNamespace(fn=lambda: stale, generation=4, job=1,
+                             succeeded=SignalSpy(lambda *args: MainWindow.worker_succeeded(window, *args)),
+                             failed=SignalSpy(lambda *args: None))
     Worker.run(worker)
-    assert worker.succeeded.calls == [(stale, 4)] and not worker.failed.calls
+    assert worker.succeeded.calls == [(stale, 4, 1)] and not worker.failed.calls
     assert state.snapshot is before and state.selected == selected
     assert state.snapshot.result is current and state.snapshot.result.detection_provenance is current.detection_provenance
+
+
+def test_obsolete_failure_and_wrong_job_do_not_disturb_current_operation(monkeypatch):
+    warnings = []; logs = []; delivered = []
+    monkeypatch.setattr('recognition_lab.ui.QMessageBox', SimpleNamespace(warning=lambda *args: warnings.append(args)))
+    window = SimpleNamespace(generation=5, operation=(2, 'recognition', True, delivered.append),
+                             log_event=lambda *args: logs.append(args))
+    MainWindow.worker_failed(window, 'failure', 'details', 4, 2)
+    MainWindow.worker_succeeded(window, object(), 5, 1)
+    MainWindow.worker_failed(window, 'failure', 'details', 5, 1)
+    assert not warnings and not delivered and len(logs) == 3
+    assert window.operation[0] == 2
+
+
+def test_model_load_is_not_invalidated_by_image_generation():
+    delivered = []; logs = []
+    window = SimpleNamespace(generation=5, operation=(1, 'model load', False, delivered.append),
+                             log_event=lambda *args: logs.append(args))
+    MainWindow.worker_succeeded(window, 'loaded', 4, 1)
+    assert delivered == ['loaded']
+
+
+def test_finished_only_clears_own_worker():
+    current = object(); stale = object(); updates = []
+    window = SimpleNamespace(worker=current, operation=(2, 'recognition', True, None),
+                             sender=lambda: stale, update_action_states=lambda: updates.append(True))
+    MainWindow.worker_finished(window)
+    assert window.worker is current and window.operation[0] == 2 and not updates
+
+
+def test_close_during_worker_is_deferred(monkeypatch):
+    messages = []; event = SimpleNamespace(ignore=lambda: messages.append('ignored'))
+    monkeypatch.setattr('recognition_lab.ui.QMessageBox', SimpleNamespace(information=lambda *args: messages.append('notice')))
+    MainWindow.closeEvent(SimpleNamespace(capture_in_progress=False, worker=object()), event)
+    assert messages == ['notice', 'ignored']
 
 
 def test_geometry_update_preserves_detection_provenance_selection_and_resets_tile():

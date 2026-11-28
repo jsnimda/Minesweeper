@@ -1,4 +1,5 @@
 import sys
+import traceback
 from pathlib import Path
 from time import perf_counter
 import skia
@@ -9,6 +10,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QPushButton, QStackedWidge
 from .capture import Frame, capture_frame, monitors
 from .pipeline import Pipeline, Settings, ROOT, GEOMETRY_ROOT, device_for
 from .provenance import validation_errors, stage_summary, tile_selection
+from .session_log import SessionLog
 from .recognition_state import RecognitionSelection
 from .explorer import explorer_items
 from .viewer_selection import hit_detection, image_point, selection_region
@@ -120,13 +122,14 @@ class Overlay(QWidget):
 
 
 class Worker(QThread):
-    succeeded = Signal(object, int)
-    failed = Signal(str)
-    def __init__(self, fn, generation):
-        super().__init__(); self.fn = fn; self.generation = generation
+    succeeded = Signal(object, int, int)
+    failed = Signal(str, str, int, int)
+    def __init__(self, fn, generation, job):
+        super().__init__(); self.fn = fn; self.generation = generation; self.job = job
     def run(self):
-        try: self.succeeded.emit(self.fn(), self.generation)
-        except Exception as exc: self.failed.emit(f'{type(exc).__name__}: {exc}')
+        try: self.succeeded.emit(self.fn(), self.generation, self.job)
+        except Exception as exc:
+            self.failed.emit(f'{type(exc).__name__}: {exc}', traceback.format_exc()[-12000:], self.generation, self.job)
 
 
 class MainWindow(QMainWindow):
@@ -136,6 +139,7 @@ class MainWindow(QMainWindow):
         self.resize(1450, 850)
         self.pipeline = Pipeline(); self.frame = None; self.recognition = RecognitionSelection()
         self.generation = 0; self.worker = None; self.folder_files = []; self.capture_in_progress = False
+        self.next_job = 0; self.operation = None; self.session_log = SessionLog()
         self.app_settings = QSettings('Minesweeper Recognition Lab', 'Recognition Lab')
         self.preferences = self.read_preferences()
         self.system_style = QApplication.style().objectName()
@@ -355,7 +359,9 @@ class MainWindow(QMainWindow):
             for verb in ('load', 'unload'):
                 button = QToolButton(); button.setDefaultAction(self.actions[f'{verb}_{key}']); button.setText(verb.title()); layout.addWidget(button)
             form.addRow(name, row)
-        self.loaded = QLabel('No models loaded'); self.loaded.setWordWrap(True); form.addRow('Loaded', self.loaded)
+        self.loaded = QLabel('No models loaded'); self.loaded.setWordWrap(True)
+        self.loaded.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        form.addRow('Loaded', self.loaded)
         self.device = QComboBox(); self.device.addItems(['auto','cpu','mps','cuda']); form.addRow('Device', self.device)
         self.imgsz = self.spin(1280, 32, 8192); form.addRow('YOLO image size', self.imgsz)
         self.conf = QDoubleSpinBox(); self.conf.setRange(0,1); self.conf.setSingleStep(.05); self.conf.setValue(.25); form.addRow('Confidence', self.conf)
@@ -388,6 +394,14 @@ class MainWindow(QMainWindow):
         diagnostic_tabs.addTab(self.frequency_panel, 'Frequency')
         diagnostic_tabs.addTab(self.local_validation_panel, 'Local Validation')
         diagnostic_tabs.addTab(self.global_panel, 'Global Recognition')
+        log_panel = QWidget(); log_layout = QVBoxLayout(log_panel)
+        self.log_view = QTextEdit(); self.log_view.setReadOnly(True)
+        log_layout.addWidget(self.log_view)
+        log_buttons = QHBoxLayout(); log_layout.addLayout(log_buttons)
+        copy_log = QPushButton('Copy log'); copy_log.clicked.connect(self.copy_log)
+        clear_log = QPushButton('Clear log'); clear_log.clicked.connect(self.clear_log)
+        log_buttons.addWidget(copy_log); log_buttons.addWidget(clear_log); log_buttons.addStretch()
+        diagnostic_tabs.addTab(log_panel, 'Logs')
         self.diagnostics_dock = self.make_dock('Diagnostics', diagnostic_tabs, Qt.DockWidgetArea.BottomDockWidgetArea)
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
@@ -450,6 +464,17 @@ class MainWindow(QMainWindow):
         dock = QDockWidget(title, self); dock.setObjectName(title.lower() + 'Dock')
         dock.setWidget(widget); self.addDockWidget(area, dock)
         return dock
+
+    def log_event(self, severity, operation, message, job=None):
+        self.session_log.add(severity, operation, message, job)
+        if hasattr(self, 'log_view'):
+            self.log_view.setPlainText(self.session_log.text())
+
+    def copy_log(self):
+        QApplication.clipboard().setText(self.session_log.text())
+
+    def clear_log(self):
+        self.session_log.clear(); self.log_view.clear()
 
     def scroll_panel(self, panel):
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(panel)
@@ -1000,7 +1025,9 @@ class MainWindow(QMainWindow):
         self.monitor.clear()
         try:
             for label, value in monitors(self.backend.currentText()): self.monitor.addItem(label, value)
-        except Exception as exc: self.diagnostics.setPlainText(f'Monitor enumeration failed: {exc}')
+        except Exception as exc:
+            self.log_event('error', 'capture', f'Monitor enumeration failed: {type(exc).__name__}: {exc}')
+            self.diagnostics.setPlainText(f'Monitor enumeration failed: {exc}')
     def set_frame(self, frame):
         self.generation += 1; self.overlay.hide(); self.frame = frame; self.recognition.replace(None)
         self._diagnostic_cache.clear(); self._diagnostic_view = None
@@ -1020,11 +1047,18 @@ class MainWindow(QMainWindow):
     def load_image(self, path):
         try:
             with Image.open(path) as image: self.set_frame(Frame(image.convert('RGB'), None, f'File: {path}\nDesktop mapping unavailable'))
-        except Exception as exc: QMessageBox.warning(self, 'Image error', str(exc))
+        except Exception as exc:
+            self.log_event('error', 'image loading', f'{path}: {type(exc).__name__}: {exc}')
+            QMessageBox.warning(self, 'Image error', str(exc))
     def open_folder(self):
         folder = QFileDialog.getExistingDirectory(self, 'Open folder')
         if folder:
-            self.folder_files = sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in ('.png','.jpg','.jpeg','.bmp','.webp'))
+            try:
+                files = sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in ('.png','.jpg','.jpeg','.bmp','.webp'))
+            except OSError as exc:
+                self.log_event('error', 'image loading', f'{folder}: {type(exc).__name__}: {exc}')
+                QMessageBox.warning(self, 'Folder error', str(exc)); return
+            self.folder_files = files
             self.folder_open = True
             self.file_list.clear(); self.file_list.addItems([p.name for p in self.folder_files]); self.update_empty_states()
     def folder_selected(self, index):
@@ -1058,6 +1092,7 @@ class MainWindow(QMainWindow):
             try: self.set_frame(capture_frame(backend, monitor, rect, highres))
             except Exception as exc:
                 if overlay_visible: self.overlay.show()
+                self.log_event('error', 'capture', f'{type(exc).__name__}: {exc}')
                 QMessageBox.warning(self, 'Capture failed', f'{exc}\nCheck screen recording permissions and backend support.')
             finally:
                 self.capture_in_progress = False
@@ -1066,36 +1101,72 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(250, finish)
     def settings(self):
         return Settings(self.device.currentText(), self.imgsz.value(), self.conf.value(), self.padding.value(), self.mode.currentText(), self.tile.value(), self.overlap.value())
-    def start_worker(self, fn, done, guard_generation=True):
+    def start_worker(self, fn, done, guard_generation=True, operation='recognition'):
         if self.worker is not None: return
-        self.statusBar().showMessage('Processing…'); self.worker = Worker(fn, self.generation)
-        self.worker_done = done; self.guard_generation = guard_generation
+        self.next_job += 1
+        self.operation = (self.next_job, operation, guard_generation, done)
+        self.statusBar().showMessage('Processing…'); self.worker = Worker(fn, self.generation, self.next_job)
+        self.log_event('info', operation, 'Started', self.next_job)
         self.update_action_states()
         self.worker.succeeded.connect(self.worker_succeeded)
         self.worker.failed.connect(self.worker_failed)
         self.worker.finished.connect(self.worker_finished); self.worker.start()
-    @Slot(object, int)
-    def worker_succeeded(self, result, generation):
-        if not self.guard_generation or generation == self.generation: self.worker_done(result)
-    @Slot(str)
-    def worker_failed(self, error):
-        QMessageBox.warning(self, 'Processing error', error)
+    @Slot(object, int, int)
+    def worker_succeeded(self, result, generation, job):
+        operation = self.operation
+        if operation is None or operation[0] != job:
+            self.log_event('info', 'operation', 'Obsolete completion ignored', job); return
+        _, label, guard, done = operation
+        if guard and generation != self.generation:
+            self.log_event('info', label, 'Obsolete completion ignored', job); return
+        done(result)
+        self.log_event('info', label, 'Completed', job)
+        if guard:
+            for index, grid in enumerate(result.grids, 1):
+                validation = grid.validation
+                if validation is not None:
+                    self.log_event('info', label, f'Grid {index}: global {getattr(validation, "status", "unavailable")}; accepted={getattr(validation, "accepted", "unavailable")}; reasons={getattr(validation, "reasons", "unavailable")}', job)
+    @Slot(str, str, int, int)
+    def worker_failed(self, error, details, generation, job):
+        operation = self.operation
+        if operation is None or operation[0] != job:
+            self.log_event('warning', 'operation', f'Obsolete failure ignored: {details}', job); return
+        _, label, guard, _ = operation
+        if guard and generation != self.generation:
+            self.log_event('warning', label, f'Obsolete failure ignored: {details}', job); return
+        self.log_event('error', label, details, job)
+        QMessageBox.warning(self, f'{label} failed', error)
     @Slot()
     def worker_finished(self):
+        if self.sender() is not self.worker: return
         self.worker = None
+        self.operation = None
         self.update_action_states()
         self.statusBar().showMessage('Ready')
     def model_action(self, key, load):
         if self.worker is not None: return
         if not load:
-            getattr(self.pipeline, 'unload_'+key)(); self.update_loaded(); return
+            getattr(self.pipeline, 'unload_'+key)(); self.log_event('info', f'{key} model', 'Unloaded'); self.update_loaded(); return
         path = {'yolo': self.yolo_path, 'phase': self.phase_path}[key].text()
         def action():
             if key == 'yolo': self.pipeline.load_yolo(path)
             else: self.pipeline.load_phase(path)
-        self.start_worker(action, lambda _: self.update_loaded(), guard_generation=False)
+        verb = 'replacement' if getattr(self.pipeline, key) is not None else 'load'
+        def loaded(_):
+            self.update_loaded()
+            identity = getattr(self.pipeline, key + '_identity')
+            self.log_event('info', f'{key} model {verb}', f'Checkpoint {path}; SHA-256 {identity.sha256 or identity.fingerprint_status}', self.next_job)
+        self.start_worker(action, loaded, guard_generation=False, operation=f'{key} model {verb}')
     def update_loaded(self):
-        self.loaded.setText(f'YOLO: {self.pipeline.yolo_path or "unloaded"}\nPhaseGridUNet: {self.pipeline.phase_path or "unloaded"}')
+        def describe(label, key):
+            path = getattr(self.pipeline, key + '_path')
+            identity = getattr(self.pipeline, key + '_identity')
+            if path is None: return f'{label}: unloaded'
+            if identity is None: return f'{label}: {path}\nSHA-256: unavailable'
+            return (f'{label}: {path}\nLoad ID: {getattr(self.pipeline, key + "_id")}\n'
+                    f'SHA-256: {identity.sha256 or identity.fingerprint_status}\n'
+                    f'Architecture: {identity.architecture or "unavailable"}; parameters: {identity.parameters if identity.parameters is not None else "unavailable"}')
+        self.loaded.setText(describe('YOLO', 'yolo') + '\n\n' + describe('PhaseGridUNet', 'phase'))
         self.update_action_states()
     def run(self, mode):
         if self.worker is not None: return
@@ -1115,7 +1186,7 @@ class MainWindow(QMainWindow):
             if mode in ('all','geometry'): result = self.pipeline.geometry(image, result, settings)
             result.timings['job wall ms'] = (perf_counter()-start)*1000
             return result
-        self.start_worker(action, lambda result: self.accept_result(result, geometry_update=mode == 'geometry'))
+        self.start_worker(action, lambda result: self.accept_result(result, geometry_update=mode == 'geometry'), operation=f'{mode} recognition')
     def accept_result(self, result, geometry_update=False):
         self.canvas.cancel_pointer()
         self._diagnostic_cache.clear(); self._diagnostic_view = None

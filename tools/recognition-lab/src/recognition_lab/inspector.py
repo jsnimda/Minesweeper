@@ -266,7 +266,8 @@ def inspector_sections(snapshot, identity):
         return sections + (_section('Inference provenance', [('Recorded provenance', None)]),)
     pairs = [('Requested device', provenance.requested_device),
              ('Resolved execution device', provenance.resolved_device),
-             ('Loaded checkpoint', provenance.checkpoint_path), ('Model load ID', provenance.model_id)]
+             ('Loaded checkpoint', provenance.checkpoint_path), ('Model load ID', provenance.model_id),
+             ('Checkpoint SHA-256', provenance.checkpoint_sha256 or provenance.fingerprint_status)]
     if identity.kind == 'detection':
         pairs += [('Requested YOLO image size', provenance.requested_image_size),
                   ('Effective YOLO image size', provenance.effective_image_size),
