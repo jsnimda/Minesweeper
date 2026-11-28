@@ -265,7 +265,7 @@ class MainWindow(QMainWindow):
 
         panel = QWidget(); form = QFormLayout(panel)
         self.yolo_path = QLineEdit(str(ROOT/'models/yolo.pt'))
-        self.phase_path = QLineEdit(str(GEOMETRY_ROOT / 'runs/phase-baseline-v1/best.pt'))
+        self.phase_path = QLineEdit(str(ROOT / 'models/phase_grid_unet.pt'))
         self.yolo_path.setMinimumWidth(0); self.phase_path.setMinimumWidth(0)
         for name, field, key in [('YOLO model', self.yolo_path, 'yolo'), ('PhaseGridUNet model', self.phase_path, 'phase')]:
             row = QWidget(); layout = QHBoxLayout(row); layout.setContentsMargins(0,0,0,0); layout.addWidget(field)
@@ -621,7 +621,7 @@ class MainWindow(QMainWindow):
         mode = self.heatmap.currentText()
         tile = self.tile_inspect.value()
         style = RecognitionStyle(self.stroke_mode.currentData(), self.stroke_width.value(), self.vector_opacity.value() / 100)
-        self.canvas.set_visualization(lambda canvas, magnification: draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile, style, magnification))
+        self.canvas.set_visualization(lambda canvas, magnification, dpr: draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile, style, magnification, dpr))
         self.overlay.update()
     def change_opacity(self, value): self.overlay.setWindowOpacity(value)
     def selected_detection(self):

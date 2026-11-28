@@ -6,6 +6,8 @@ import math
 import skia
 import numpy as np
 
+DETECTION_COLORS = {'grid': 0xff1683c7, 'mine counter': 0xffb84669, 'timer': 0xff8a5abd, 'reset button': 0xffad6200}
+
 COLORS = {'accepted': 0xff34d17b, 'rejected': 0xffff5c66, 'ambiguous': 0xffffc34d}
 
 
@@ -52,20 +54,43 @@ def label_typeface():
     raise RuntimeError('No usable system font is available for recognition labels')
 
 
-def draw(canvas, result, layers, selected=None, style=DESKTOP_STYLE, magnification=1.0):
+def draw(canvas, result, layers, selected=None, style=DESKTOP_STYLE, magnification=1.0, dpr=None):
     if result is None:
         return
     dim = lambda size: style.dimension(size, magnification)
     color_with_opacity = style.color
     stroke = skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=dim(style.width))
-    font = skia.Font(label_typeface(), dim(14))
+    interactive = dpr is not None
+    # Annotation sizes use logical pixels in screen mode; precision strokes use physical pixels.
+    logical = lambda size: style.dimension(size * dpr, magnification) if interactive and style.mode == 'screen' else size
+    font_size = logical(13) if interactive else dim(14)
+    font = skia.Font(label_typeface(), font_size)
+    occupied = []
     def label(text, x, y, color):
-        canvas.drawString(text, x, max(dim(14), y), font, skia.Paint(Color=color_with_opacity(color), AntiAlias=True))
+        if not interactive:
+            canvas.drawString(text, x, max(dim(14), y), font, skia.Paint(Color=color_with_opacity(color), AntiAlias=True))
+            return
+        pad = logical(3)
+        height = font_size + 2 * pad
+        width = font.measureText(text) + 2 * pad
+        top = y - height
+        if top < 0: top = y + pad
+        for left, upper, right, lower in occupied:
+            if x < right and x + width > left and top < lower and top + height > upper:
+                top = lower + pad
+        occupied.append((x, top, x + width, top + height))
+        canvas.drawRect(skia.Rect.MakeXYWH(x, top, width, height), skia.Paint(Color=color_with_opacity(color)))
+        r, g, b = (color >> 16) & 255, (color >> 8) & 255, color & 255
+        foreground = 0xff000000 if (299*r + 587*g + 114*b) >= 150000 else 0xffffffff
+        canvas.drawString(text, x + pad, top + pad + font_size, font, skia.Paint(Color=color_with_opacity(foreground), AntiAlias=True))
     if layers.get('detections'):
         for d in result.detections:
-            stroke.setColor(color_with_opacity(0xff36cfff))
+            detection_color = DETECTION_COLORS.get(d.name.lower(), 0xff167d86) if interactive else 0xff36cfff
+            stroke.setColor(color_with_opacity(detection_color))
+            if interactive: stroke.setStrokeWidth(logical(2))
             canvas.drawRect(skia.Rect.MakeLTRB(*d.box), stroke)
-            label(f'{d.name} {d.confidence:.2f}', d.box[0], d.box[1]-dim(3), 0xff36cfff)
+            label(f'{d.name} {d.confidence:.2f}', d.box[0], d.box[1] if interactive else d.box[1]-dim(3), detection_color)
+        if interactive: stroke.setStrokeWidth(dim(style.width))
     for grid in result.grids:
         if selected is not None and grid.detection_index != selected:
             continue
@@ -127,6 +152,10 @@ def draw(canvas, result, layers, selected=None, style=DESKTOP_STYLE, magnificati
                         cell_color = 0x5534d17b if np.isfinite(value) and value >= .5 else 0x88ff5c66
                         canvas.drawRect(skia.Rect.MakeLTRB(float(xs[col]), float(ys[row]), float(xs[col+1]), float(ys[row+1])), skia.Paint(Color=color_with_opacity(cell_color)))
         if layers.get('boundaries'):
+            if interactive:
+                stroke.setStrokeWidth(logical(1.5))
+                canvas.drawRect(skia.Rect.MakeLTRB(float(xs[0]), float(ys[0]), float(xs[-1]), float(ys[-1])), stroke)
+                stroke.setStrokeWidth(dim(style.width))
             for x in xs: canvas.drawLine(float(x), float(ys[0]), float(x), float(ys[-1]), stroke)
             for y in ys: canvas.drawLine(float(xs[0]), float(y), float(xs[-1]), float(y), stroke)
         if layers.get('centers'):
@@ -137,7 +166,7 @@ def draw(canvas, result, layers, selected=None, style=DESKTOP_STYLE, magnificati
         label(f'{len(ys)-1}×{len(xs)-1} {grid.decoding.status} / {grid.validation.status if grid.validation else "rejected"}', float(xs[0]), float(ys[0])-dim(4), color)
 
 
-def draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile_index, style, magnification):
+def draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile_index, style, magnification, dpr):
     """Draw recognition content in source coordinates, after the source image."""
     heat = None
     tile_offset = (0, 0)
@@ -167,4 +196,4 @@ def draw_viewer_visualization(canvas, result, layers, selected, grid, mode, tile
         canvas.clipRect(skia.Rect.MakeLTRB(*grid.crop.box))
         canvas.drawImageRect(hm, rect)
         canvas.restore()
-    draw(canvas, result, layers, selected, style, magnification)
+    draw(canvas, result, layers, selected, style, magnification, dpr)

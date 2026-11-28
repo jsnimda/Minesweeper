@@ -71,3 +71,11 @@ def test_detection_paint_uses_style_without_changing_coordinates():
         assert width == pytest.approx(1.5 / magnification)
         assert color == 0x8036cfff
     assert result.detections[0].box == box
+
+
+@pytest.mark.parametrize(('logical_scale', 'dpr'), [(1, 1), (.5, 2), (1.5, 2)])
+def test_logical_annotation_and_physical_precision_dimensions(logical_scale, dpr):
+    style = RecognitionStyle()
+    magnification = physical_scale(logical_scale, dpr)
+    assert style.dimension(2 * dpr, magnification) * logical_scale == pytest.approx(2)
+    assert style.dimension(1, magnification) * magnification == pytest.approx(1)

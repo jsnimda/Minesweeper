@@ -79,7 +79,7 @@ class ImageViewer(QWidget):
         self.update()
 
     def set_visualization(self, render):
-        """Set a callback receiving the canvas and current physical magnification."""
+        """Set a callback receiving the canvas, physical magnification and device pixel ratio."""
         self.visualization = render
         self.update()
 
@@ -260,7 +260,7 @@ class ImageViewer(QWidget):
             if self.pixel_grid_visible:
                 self._draw_pixel_grid(canvas, dpr)
             if self.visualization is not None:
-                self.visualization(canvas, physical_scale(tr.scale, dpr))
+                self.visualization(canvas, physical_scale(tr.scale, dpr), dpr)
         painter = QPainter(self)
         pixmap = surface_pixmap(surface); pixmap.setDevicePixelRatio(dpr)
         painter.drawPixmap(0, 0, pixmap)
